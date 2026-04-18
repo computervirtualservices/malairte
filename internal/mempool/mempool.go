@@ -6,7 +6,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/malairt/malairt/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 // TxPool is an in-memory pool of unconfirmed transactions awaiting confirmation.

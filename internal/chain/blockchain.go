@@ -7,9 +7,9 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/malairt/malairt/internal/consensus"
-	"github.com/malairt/malairt/internal/primitives"
-	"github.com/malairt/malairt/internal/storage"
+	"github.com/computervirtualservices/malairte/internal/consensus"
+	"github.com/computervirtualservices/malairte/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/storage"
 )
 
 // Blockchain manages the canonical chain state including the current tip,

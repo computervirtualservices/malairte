@@ -9,10 +9,10 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/malairt/malairt/internal/chain"
-	"github.com/malairt/malairt/internal/mempool"
-	"github.com/malairt/malairt/internal/mining"
-	"github.com/malairt/malairt/internal/network"
+	"github.com/computervirtualservices/malairte/internal/chain"
+	"github.com/computervirtualservices/malairte/internal/mempool"
+	"github.com/computervirtualservices/malairte/internal/mining"
+	"github.com/computervirtualservices/malairte/internal/network"
 )
 
 // rpcRequest represents an incoming JSON-RPC 1.0 request.

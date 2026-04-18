@@ -9,12 +9,12 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/malairt/malairt/internal/chain"
-	"github.com/malairt/malairt/internal/crypto"
-	"github.com/malairt/malairt/internal/mempool"
-	"github.com/malairt/malairt/internal/primitives"
-	"github.com/malairt/malairt/internal/rpc"
-	"github.com/malairt/malairt/internal/storage"
+	"github.com/computervirtualservices/malairte/internal/chain"
+	"github.com/computervirtualservices/malairte/internal/crypto"
+	"github.com/computervirtualservices/malairte/internal/mempool"
+	"github.com/computervirtualservices/malairte/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/rpc"
+	"github.com/computervirtualservices/malairte/internal/storage"
 )
 
 // ── in-memory DB for tests ────────────────────────────────────────────────────

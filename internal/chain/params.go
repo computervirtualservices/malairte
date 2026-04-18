@@ -2,8 +2,8 @@
 package chain
 
 import (
-	"github.com/malairt/malairt/internal/crypto"
-	"github.com/malairt/malairt/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/crypto"
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 // ChainParams holds all consensus-critical parameters for a network.

@@ -1,7 +1,7 @@
 package chain
 
 import (
-	"github.com/malairt/malairt/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 // genesisMessage is the coinbase message embedded in the genesis block.

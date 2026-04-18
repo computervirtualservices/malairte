@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/malairt/malairt/internal/crypto"
-	"github.com/malairt/malairt/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/crypto"
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 // sigHashAll is the only supported SIGHASH type: sign all inputs and outputs.

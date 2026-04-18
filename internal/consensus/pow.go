@@ -5,8 +5,8 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/malairt/malairt/internal/crypto"
-	"github.com/malairt/malairt/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/crypto"
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 // MLRTHash computes the proof-of-work hash for a block header.

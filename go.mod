@@ -1,4 +1,4 @@
-module github.com/malairt/malairt
+module github.com/computervirtualservices/malairte
 
 go 1.22
 

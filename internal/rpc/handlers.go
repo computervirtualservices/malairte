@@ -6,10 +6,10 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/malairt/malairt/internal/chain"
-	"github.com/malairt/malairt/internal/consensus"
-	"github.com/malairt/malairt/internal/crypto"
-	"github.com/malairt/malairt/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/chain"
+	"github.com/computervirtualservices/malairte/internal/consensus"
+	"github.com/computervirtualservices/malairte/internal/crypto"
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 // getBlockchainInfo returns summary information about the chain state.

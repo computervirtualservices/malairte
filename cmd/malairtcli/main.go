@@ -12,7 +12,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/malairt/malairt/internal/crypto"
+	"github.com/computervirtualservices/malairte/internal/crypto"
 )
 
 const defaultRPCURL = "http://127.0.0.1:9332"

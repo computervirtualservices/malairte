@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/malairt/malairt/internal/chain"
+	"github.com/computervirtualservices/malairte/internal/chain"
 )
 
 // PeerMessage wraps a decoded message with its source peer.

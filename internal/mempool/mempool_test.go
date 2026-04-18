@@ -3,7 +3,7 @@ package mempool
 import (
 	"testing"
 
-	"github.com/malairt/malairt/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 // makeTx builds a minimal valid non-coinbase transaction for testing.

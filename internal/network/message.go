@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/malairt/malairt/internal/crypto"
-	"github.com/malairt/malairt/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/crypto"
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 // Message command strings (12 bytes max, null-padded on the wire).

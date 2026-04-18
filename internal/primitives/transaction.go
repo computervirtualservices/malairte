@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 
-	"github.com/malairt/malairt/internal/crypto"
+	"github.com/computervirtualservices/malairte/internal/crypto"
 )
 
 // OutPoint identifies a specific output of a specific transaction.

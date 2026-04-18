@@ -3,8 +3,8 @@ package chain
 import (
 	"testing"
 
-	"github.com/malairt/malairt/internal/consensus"
-	"github.com/malairt/malairt/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/consensus"
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 // buildMinedBlock builds and mines a block with the given bits.

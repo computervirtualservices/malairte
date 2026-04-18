@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/malairt/malairt/internal/consensus"
-	"github.com/malairt/malairt/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/consensus"
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 // MaxFutureTimestamp is the maximum number of seconds a block timestamp can

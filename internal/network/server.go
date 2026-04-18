@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/malairt/malairt/internal/chain"
-	"github.com/malairt/malairt/internal/consensus"
-	"github.com/malairt/malairt/internal/mempool"
-	"github.com/malairt/malairt/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/chain"
+	"github.com/computervirtualservices/malairte/internal/consensus"
+	"github.com/computervirtualservices/malairte/internal/mempool"
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 // protocolVersion is the current P2P protocol version.

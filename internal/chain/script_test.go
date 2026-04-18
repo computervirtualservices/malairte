@@ -4,8 +4,8 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/malairt/malairt/internal/crypto"
-	"github.com/malairt/malairt/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/crypto"
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 // ── helpers ──────────────────────────────────────────────────────────────────

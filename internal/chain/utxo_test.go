@@ -4,8 +4,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/malairt/malairt/internal/primitives"
-	"github.com/malairt/malairt/internal/storage"
+	"github.com/computervirtualservices/malairte/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/storage"
 )
 
 // ── in-memory DB for tests ────────────────────────────────────────────────────

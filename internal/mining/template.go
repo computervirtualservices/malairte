@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/malairt/malairt/internal/chain"
-	"github.com/malairt/malairt/internal/mempool"
-	"github.com/malairt/malairt/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/chain"
+	"github.com/computervirtualservices/malairte/internal/mempool"
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 // maxBlockTxs is the maximum number of non-coinbase transactions per block.

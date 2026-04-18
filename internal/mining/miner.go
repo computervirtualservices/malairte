@@ -9,12 +9,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/malairt/malairt/internal/chain"
-	"github.com/malairt/malairt/internal/consensus"
-	"github.com/malairt/malairt/internal/crypto"
-	"github.com/malairt/malairt/internal/mempool"
-	"github.com/malairt/malairt/internal/network"
-	"github.com/malairt/malairt/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/chain"
+	"github.com/computervirtualservices/malairte/internal/consensus"
+	"github.com/computervirtualservices/malairte/internal/crypto"
+	"github.com/computervirtualservices/malairte/internal/mempool"
+	"github.com/computervirtualservices/malairte/internal/network"
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 // CpuMiner continuously mines new blocks using the CPU and submits them to the blockchain.

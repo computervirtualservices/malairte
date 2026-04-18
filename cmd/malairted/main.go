@@ -13,14 +13,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/malairt/malairt/config"
-	"github.com/malairt/malairt/internal/chain"
-	"github.com/malairt/malairt/internal/crypto"
-	"github.com/malairt/malairt/internal/mempool"
-	"github.com/malairt/malairt/internal/mining"
-	"github.com/malairt/malairt/internal/network"
-	"github.com/malairt/malairt/internal/rpc"
-	"github.com/malairt/malairt/internal/storage"
+	"github.com/computervirtualservices/malairte/config"
+	"github.com/computervirtualservices/malairte/internal/chain"
+	"github.com/computervirtualservices/malairte/internal/crypto"
+	"github.com/computervirtualservices/malairte/internal/mempool"
+	"github.com/computervirtualservices/malairte/internal/mining"
+	"github.com/computervirtualservices/malairte/internal/network"
+	"github.com/computervirtualservices/malairte/internal/rpc"
+	"github.com/computervirtualservices/malairte/internal/storage"
 )
 
 const version = "0.1.0-dev"

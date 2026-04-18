@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malairt/malairt/internal/network"
-	"github.com/malairt/malairt/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/network"
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 // testMagic is a magic value used throughout the message tests.

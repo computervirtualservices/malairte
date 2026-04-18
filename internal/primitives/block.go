@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 
-	"github.com/malairt/malairt/internal/crypto"
+	"github.com/computervirtualservices/malairte/internal/crypto"
 )
 
 // BlockHeader is the structure that gets hashed for PoW.

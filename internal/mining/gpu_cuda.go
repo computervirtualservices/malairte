@@ -32,9 +32,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/malairt/malairt/internal/consensus"
-	"github.com/malairt/malairt/internal/crypto"
-	"github.com/malairt/malairt/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/consensus"
+	"github.com/computervirtualservices/malairte/internal/crypto"
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 // gpuBatchSize is the number of nonces tried per kernel launch.
