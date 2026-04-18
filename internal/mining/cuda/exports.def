@@ -1,0 +1,6 @@
+LIBRARY mlrt_gpu.dll
+EXPORTS
+  mlrt_gpu_init
+  mlrt_gpu_shutdown
+  mlrt_gpu_mine
+  mlrt_cpu_hash

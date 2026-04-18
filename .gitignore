@@ -1,0 +1,59 @@
+# ── Compiled binaries (distributed via GitHub Releases, never in tree) ───────
+# Anchored to repo root with leading '/' so we don't accidentally ignore
+# cmd/malairted/ or cmd/malairtcli/ source packages.
+/malairtcli
+/malairtcli.exe
+/malairtcli-*
+/malairted
+/malairted.exe
+/malairted-*
+/mlrt_gpu.dll
+/mlrt_gpu.so
+/mlrt_gpu.dylib
+
+# ── Local Go build artefacts ─────────────────────────────────────────────────
+bin/
+dist/
+build/
+*.test
+*.out
+
+# ── CUDA / native compile outputs (only the .cu source belongs in tree) ──────
+**/*.dll
+**/*.so
+**/*.dylib
+**/*.obj
+**/*.o
+**/*.a
+**/*.lib
+**/*.exp
+**/*.pdb
+
+# ── Runtime data / chain state ───────────────────────────────────────────────
+data/
+chainstate/
+blocks/
+*.db
+*.log
+
+# ── Secrets & live keys — NEVER commit ───────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.seed
+secrets/
+private/
+release-key/
+
+# ── OS / editors ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Claude Code session metadata ─────────────────────────────────────────────
+.claude/
