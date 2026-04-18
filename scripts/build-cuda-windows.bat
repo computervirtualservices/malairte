@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 
-REM Build malairted-windows-amd64-cuda.exe.
+REM Build malairte-node-windows-amd64-cuda.exe.
 REM Requires VS 2022 / 2026 with the C++ workload, CUDA Toolkit, Go 1.22+,
 REM and MinGW gcc on PATH (for CGO link).
 
@@ -83,9 +83,9 @@ if errorlevel 1 (echo ERROR: dlltool failed & exit /b 7)
 
 echo OK: mlrt_gpu.dll built ^(self-contained^) + libmlrtgpu.a import lib.
 
-REM --- Build malairted with cgo+cuda tag -----------------------------------
+REM --- Build malairte-node with cgo+cuda tag -----------------------------------
 cd /d "%REPO%"
-echo Building malairted-windows-amd64-cuda.exe ...
+echo Building malairte-node-windows-amd64-cuda.exe ...
 set CGO_ENABLED=1
 
 REM Find CUDA lib path so the MinGW linker can resolve cudart_static.lib.
@@ -105,11 +105,11 @@ for %%A in ("%CUDA_LIB%") do set "CUDA_LIB_SHORT=%%~sA"
 echo CUDA lib path: %CUDA_LIB_SHORT%
 set CGO_LDFLAGS=-L%CUDA_LIB_SHORT%
 
-go build -tags cuda -ldflags "-s -w" -o malairted-windows-amd64-cuda.exe .\cmd\malairted
+go build -tags cuda -ldflags "-s -w" -o malairte-node-windows-amd64-cuda.exe .\cmd\malairte-node
 if errorlevel 1 (echo ERROR: go build failed & exit /b 7)
 
-for %%A in (malairted-windows-amd64-cuda.exe) do set SZ=%%~zA
+for %%A in (malairte-node-windows-amd64-cuda.exe) do set SZ=%%~zA
 echo.
-echo OK: malairted-windows-amd64-cuda.exe built ^(!SZ! bytes^)
-echo Run it:  malairted-windows-amd64-cuda.exe --mine --gpu --miner-key=^<key^>
+echo OK: malairte-node-windows-amd64-cuda.exe built ^(!SZ! bytes^)
+echo Run it:  malairte-node-windows-amd64-cuda.exe --mine --gpu --miner-key=^<key^>
 endlocal

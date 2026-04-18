@@ -18,19 +18,19 @@ but with separate chain state and different magic bytes.
 ## Running a Testnet Node
 
 ```bash
-malairted --network=testnet --data-dir=~/.malairted/testnet
+malairte-node --network=testnet --data-dir=~/.malairte/testnet
 ```
 
 ## Running a Testnet Miner
 
 ```bash
-malairted --network=testnet --mine --data-dir=~/.malairted/testnet
+malairte-node --network=testnet --mine --data-dir=~/.malairte/testnet
 ```
 
 ## Connecting to Testnet Peers
 
 ```bash
-malairted --network=testnet --seeds=<peer1>:19333,<peer2>:19333
+malairte-node --network=testnet --seeds=<peer1>:19333,<peer2>:19333
 ```
 
 ## Testnet CLI Examples
@@ -39,9 +39,9 @@ malairted --network=testnet --seeds=<peer1>:19333,<peer2>:19333
 # Use testnet RPC port
 export MLRT_RPC=http://127.0.0.1:19332
 
-malairtcli --rpc $MLRT_RPC getinfo
-malairtcli --rpc $MLRT_RPC genkey
-malairtcli --rpc $MLRT_RPC getmininginfo
+malairte-cli --rpc $MLRT_RPC getinfo
+malairte-cli --rpc $MLRT_RPC genkey
+malairte-cli --rpc $MLRT_RPC getmininginfo
 ```
 
 ## Notes

@@ -8,8 +8,8 @@
 //
 //	cd internal/mining/cuda && make
 //	cd ../../..
-//	CGO_ENABLED=1 go build -tags cuda -o malairted ./cmd/malairted
-//	./malairted --mine --gpu --miner-key=<key>
+//	CGO_ENABLED=1 go build -tags cuda -o malairte-node ./cmd/malairte-node
+//	./malairte-node --mine --gpu --miner-key=<key>
 package mining
 
 /*
@@ -17,7 +17,7 @@ package mining
 #cgo linux   LDFLAGS: ${SRCDIR}/cuda/libmlrtgpu.a -lcudart_static -lculibos -ldl -lpthread -lrt -lstdc++ -lm
 // Windows: link against the MinGW import lib for mlrt_gpu.dll. The DLL itself
 // statically embeds the CUDA runtime + MSVC intrinsics so this exe has zero
-// external CUDA dependencies — just ship mlrt_gpu.dll alongside malairted.exe.
+// external CUDA dependencies — just ship mlrt_gpu.dll alongside malairte-node.exe.
 #cgo windows LDFLAGS: ${SRCDIR}/cuda/libmlrtgpu.a
 
 #include <stdint.h>

@@ -51,13 +51,13 @@ func TestDefaultConfig_DataDirIsAbsolute(t *testing.T) {
 	}
 }
 
-func TestDefaultConfig_DataDirContainsMalairted(t *testing.T) {
+func TestDefaultConfig_DataDirContainsMalairte(t *testing.T) {
 	cfg := DefaultConfig()
-	// The default data dir should contain "malairted" or "Malairted"
-	// regardless of OS (case-insensitive check).
+	// The default data dir should contain "malairte" regardless of OS
+	// (case-insensitive check).
 	lower := strings.ToLower(cfg.DataDir)
-	if !strings.Contains(lower, "malairted") {
-		t.Errorf("DataDir %q should contain 'malairted'", cfg.DataDir)
+	if !strings.Contains(lower, "malairte") {
+		t.Errorf("DataDir %q should contain 'malairte'", cfg.DataDir)
 	}
 }
 

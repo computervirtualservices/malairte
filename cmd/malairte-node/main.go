@@ -1,4 +1,4 @@
-// Command malairted is the Malairt blockchain node daemon.
+// Command malairte-node is the Malairt blockchain node daemon.
 // It manages the P2P network, blockchain state, UTXO set, mempool, CPU miner,
 // and JSON-RPC server.
 package main

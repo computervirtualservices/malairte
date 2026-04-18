@@ -1,4 +1,4 @@
-// Command malairtcli is a command-line interface for interacting with a running malairted node.
+// Command malairte-cli is a command-line interface for interacting with a running malairte-node node.
 // It communicates via the JSON-RPC interface.
 package main
 
@@ -41,7 +41,7 @@ func main() {
 		err = cmdGetBlockCount(*rpcURL)
 	case "getblockhash":
 		if len(cmdArgs) < 1 {
-			fmt.Fprintln(os.Stderr, "usage: malairtcli getblockhash <height>")
+			fmt.Fprintln(os.Stderr, "usage: malairte-cli getblockhash <height>")
 			os.Exit(1)
 		}
 		height, e := strconv.ParseUint(cmdArgs[0], 10, 64)
@@ -52,13 +52,13 @@ func main() {
 		err = cmdRPC(*rpcURL, "getblockhash", []interface{}{height})
 	case "getblock":
 		if len(cmdArgs) < 1 {
-			fmt.Fprintln(os.Stderr, "usage: malairtcli getblock <hash>")
+			fmt.Fprintln(os.Stderr, "usage: malairte-cli getblock <hash>")
 			os.Exit(1)
 		}
 		err = cmdRPC(*rpcURL, "getblock", []interface{}{cmdArgs[0], 2})
 	case "getrawtransaction":
 		if len(cmdArgs) < 1 {
-			fmt.Fprintln(os.Stderr, "usage: malairtcli getrawtransaction <txid> [verbose]")
+			fmt.Fprintln(os.Stderr, "usage: malairte-cli getrawtransaction <txid> [verbose]")
 			os.Exit(1)
 		}
 		verbose := false
@@ -68,7 +68,7 @@ func main() {
 		err = cmdRPC(*rpcURL, "getrawtransaction", []interface{}{cmdArgs[0], verbose})
 	case "sendrawtx":
 		if len(cmdArgs) < 1 {
-			fmt.Fprintln(os.Stderr, "usage: malairtcli sendrawtx <hex>")
+			fmt.Fprintln(os.Stderr, "usage: malairte-cli sendrawtx <hex>")
 			os.Exit(1)
 		}
 		err = cmdRPC(*rpcURL, "sendrawtransaction", []interface{}{cmdArgs[0]})
@@ -82,7 +82,7 @@ func main() {
 		err = cmdRPC(*rpcURL, "stop", nil)
 	case "getaddresstransactions":
 		if len(cmdArgs) < 1 {
-			fmt.Fprintln(os.Stderr, "usage: malairtcli getaddresstransactions <address> [limit]")
+			fmt.Fprintln(os.Stderr, "usage: malairte-cli getaddresstransactions <address> [limit]")
 			os.Exit(1)
 		}
 		txParams := []interface{}{cmdArgs[0]}
@@ -94,19 +94,19 @@ func main() {
 		err = cmdRPC(*rpcURL, "getaddresstransactions", txParams)
 	case "getaddressbalance":
 		if len(cmdArgs) < 1 {
-			fmt.Fprintln(os.Stderr, "usage: malairtcli getaddressbalance <address>")
+			fmt.Fprintln(os.Stderr, "usage: malairte-cli getaddressbalance <address>")
 			os.Exit(1)
 		}
 		err = cmdRPC(*rpcURL, "getaddressbalance", []interface{}{cmdArgs[0]})
 	case "getaddressutxos":
 		if len(cmdArgs) < 1 {
-			fmt.Fprintln(os.Stderr, "usage: malairtcli getaddressutxos <address>")
+			fmt.Fprintln(os.Stderr, "usage: malairte-cli getaddressutxos <address>")
 			os.Exit(1)
 		}
 		err = cmdRPC(*rpcURL, "getaddressutxos", []interface{}{cmdArgs[0]})
 	case "validateaddress":
 		if len(cmdArgs) < 1 {
-			fmt.Fprintln(os.Stderr, "usage: malairtcli validateaddress <address>")
+			fmt.Fprintln(os.Stderr, "usage: malairte-cli validateaddress <address>")
 			os.Exit(1)
 		}
 		err = cmdRPC(*rpcURL, "validateaddress", []interface{}{cmdArgs[0]})
@@ -128,10 +128,10 @@ func main() {
 
 // usage prints the command usage information.
 func usage() {
-	fmt.Fprintf(os.Stderr, `malairtcli — Malairt node CLI
+	fmt.Fprintf(os.Stderr, `malairte-cli — Malairt node CLI
 
 Usage:
-  malairtcli [--rpc <url>] <command> [args]
+  malairte-cli [--rpc <url>] <command> [args]
 
 Commands:
   genkey                          Generate a new secp256k1 keypair and print addresses

@@ -144,15 +144,15 @@ func defaultDataDir() string {
 	case "windows":
 		appdata := os.Getenv("APPDATA")
 		if appdata != "" {
-			return filepath.Join(appdata, "Malairted")
+			return filepath.Join(appdata, "Malairte")
 		}
-		return filepath.Join(os.Getenv("USERPROFILE"), ".malairted")
+		return filepath.Join(os.Getenv("USERPROFILE"), ".malairte")
 	case "darwin":
 		home, _ := os.UserHomeDir()
-		return filepath.Join(home, "Library", "Application Support", "Malairted")
+		return filepath.Join(home, "Library", "Application Support", "Malairte")
 	default: // Linux and other Unix-like
 		home, _ := os.UserHomeDir()
-		return filepath.Join(home, ".malairted")
+		return filepath.Join(home, ".malairte")
 	}
 }
 

@@ -2,8 +2,8 @@
 
 # Build binaries into bin/
 build:
-	go build -o bin/malairted ./cmd/malairted
-	go build -o bin/malairtcli ./cmd/malairtcli
+	go build -o bin/malairte-node ./cmd/malairte-node
+	go build -o bin/malairte-cli ./cmd/malairte-cli
 
 # Run all tests
 test:
@@ -23,7 +23,7 @@ clean:
 
 # Run a local devnet (testnet with mining enabled)
 run-devnet:
-	./bin/malairted \
+	./bin/malairte-node \
 		--network=testnet \
 		--mine \
 		--data-dir=./data/devnet \
@@ -45,23 +45,23 @@ tidy:
 
 # Build Docker image
 docker-build:
-	docker build -t malairted:latest .
+	docker build -t malairte-node:latest .
 
 # Run in Docker
 docker-run:
 	docker run -d \
 		-p 9333:9333 \
 		-p 9332:9332 \
-		-v malairted-data:/data \
-		--name malairted \
-		malairted:latest \
+		-v malairte-node-data:/data \
+		--name malairte-node \
+		malairte-node:latest \
 		--data-dir=/data
 
 # Print help
 help:
 	@echo "Malairt blockchain node build targets:"
 	@echo ""
-	@echo "  build        Build malairted and malairtcli binaries"
+	@echo "  build        Build malairte-node and malairte-cli binaries"
 	@echo "  test         Run all unit tests"
 	@echo "  test-verbose Run tests with verbose output"
 	@echo "  test-race    Run tests with race detector"

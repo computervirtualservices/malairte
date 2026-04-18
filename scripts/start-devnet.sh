@@ -30,11 +30,11 @@ for arg in "$@"; do
 done
 
 # Build if binaries don't exist
-if [ ! -f "$BIN_DIR/malairted" ]; then
-  echo "Building malairted..."
+if [ ! -f "$BIN_DIR/malairte-node" ]; then
+  echo "Building malairte-node..."
   cd "$PROJECT_DIR"
-  go build -o "$BIN_DIR/malairted" ./cmd/malairted
-  go build -o "$BIN_DIR/malairtcli" ./cmd/malairtcli
+  go build -o "$BIN_DIR/malairte-node" ./cmd/malairte-node
+  go build -o "$BIN_DIR/malairte-cli" ./cmd/malairte-cli
 fi
 
 # Reset devnet data if requested
@@ -51,10 +51,10 @@ echo "  Data dir: $DATA_DIR"
 echo "  RPC:      http://127.0.0.1:19332"
 echo "  P2P:      0.0.0.0:19333"
 echo ""
-echo "Try: $BIN_DIR/malairtcli --rpc http://127.0.0.1:19332 getinfo"
+echo "Try: $BIN_DIR/malairte-cli --rpc http://127.0.0.1:19332 getinfo"
 echo ""
 
-exec "$BIN_DIR/malairted" \
+exec "$BIN_DIR/malairte-node" \
   --network=testnet \
   --mine \
   --data-dir="$DATA_DIR" \

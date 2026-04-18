@@ -8,8 +8,8 @@ import "log"
 // Users who want GPU mining must install CUDA Toolkit and rebuild:
 //
 //	cd internal/mining/cuda && make
-//	go build -tags cuda ./cmd/malairted
+//	go build -tags cuda ./cmd/malairte-node
 func (m *CpuMiner) gpuLoop() {
 	log.Printf("[miner] --gpu set but this build has no CUDA support — staying CPU-only")
-	log.Printf("[miner] to enable: cd internal/mining/cuda && make; then: go build -tags cuda ./cmd/malairted")
+	log.Printf("[miner] to enable: cd internal/mining/cuda && make; then: go build -tags cuda ./cmd/malairte-node")
 }

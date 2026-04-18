@@ -107,48 +107,48 @@ This walkthrough uses the **GitHub Release** binaries — pre-built, signed, and
 
 ```powershell
 # Download the latest CPU-only node + CLI
-Invoke-WebRequest https://github.com/computervirtualservices/malairte/releases/latest/download/malairted-windows-amd64.exe -OutFile malairted.exe
-Invoke-WebRequest https://github.com/computervirtualservices/malairte/releases/latest/download/malairtcli-windows-amd64.exe -OutFile malairtcli.exe
+Invoke-WebRequest https://github.com/computervirtualservices/malairte/releases/latest/download/malairte-node-windows-amd64.exe -OutFile malairte-node.exe
+Invoke-WebRequest https://github.com/computervirtualservices/malairte/releases/latest/download/malairte-cli-windows-amd64.exe -OutFile malairte-cli.exe
 
 # Start the node (mainnet, default ports 9332 RPC / 9333 P2P)
-.\malairted.exe --datadir=$env:APPDATA\Malairte
+.\malairte-node.exe --datadir=$env:APPDATA\Malairte
 ```
 
 #### Linux
 
 ```bash
 # AMD64
-curl -L -o malairted https://github.com/computervirtualservices/malairte/releases/latest/download/malairted-linux-amd64
-curl -L -o malairtcli https://github.com/computervirtualservices/malairte/releases/latest/download/malairtcli-linux-amd64
-chmod +x malairted malairtcli
+curl -L -o malairte-node https://github.com/computervirtualservices/malairte/releases/latest/download/malairte-node-linux-amd64
+curl -L -o malairte-cli https://github.com/computervirtualservices/malairte/releases/latest/download/malairte-cli-linux-amd64
+chmod +x malairte-node malairte-cli
 
 # Start the node
-./malairted --datadir=$HOME/.malairte
+./malairte-node --datadir=$HOME/.malairte
 ```
 
 ARM64 builds (Raspberry Pi 4/5, Ampere, AWS Graviton):
 
 ```bash
-curl -L -o malairted https://github.com/computervirtualservices/malairte/releases/latest/download/malairted-linux-arm64
-curl -L -o malairtcli https://github.com/computervirtualservices/malairte/releases/latest/download/malairtcli-linux-arm64
-chmod +x malairted malairtcli
-./malairted --datadir=$HOME/.malairte
+curl -L -o malairte-node https://github.com/computervirtualservices/malairte/releases/latest/download/malairte-node-linux-arm64
+curl -L -o malairte-cli https://github.com/computervirtualservices/malairte/releases/latest/download/malairte-cli-linux-arm64
+chmod +x malairte-node malairte-cli
+./malairte-node --datadir=$HOME/.malairte
 ```
 
 #### macOS
 
 ```bash
 # Apple Silicon
-curl -L -o malairted https://github.com/computervirtualservices/malairte/releases/latest/download/malairted-darwin-arm64
-curl -L -o malairtcli https://github.com/computervirtualservices/malairte/releases/latest/download/malairtcli-darwin-arm64
+curl -L -o malairte-node https://github.com/computervirtualservices/malairte/releases/latest/download/malairte-node-darwin-arm64
+curl -L -o malairte-cli https://github.com/computervirtualservices/malairte/releases/latest/download/malairte-cli-darwin-arm64
 
 # Intel
-# curl -L -o malairted https://github.com/computervirtualservices/malairte/releases/latest/download/malairted-darwin-amd64
-# curl -L -o malairtcli https://github.com/computervirtualservices/malairte/releases/latest/download/malairtcli-darwin-amd64
+# curl -L -o malairte-node https://github.com/computervirtualservices/malairte/releases/latest/download/malairte-node-darwin-amd64
+# curl -L -o malairte-cli https://github.com/computervirtualservices/malairte/releases/latest/download/malairte-cli-darwin-amd64
 
-chmod +x malairted malairtcli
-xattr -d com.apple.quarantine malairted malairtcli   # first run only
-./malairted --datadir=$HOME/Library/Application\ Support/Malairte
+chmod +x malairte-node malairte-cli
+xattr -d com.apple.quarantine malairte-node malairte-cli   # first run only
+./malairte-node --datadir=$HOME/Library/Application\ Support/Malairte
 ```
 
 The node will create its data directory, generate a `malairte.conf`, connect to seed peers, and begin syncing the chain over P2P port **9333**.
@@ -158,7 +158,7 @@ The node will create its data directory, generate a `malairte.conf`, connect to 
 Mining is built into the node. Provide a miner private key (64 hex characters) and add `--mine`:
 
 ```bash
-./malairted --mine --miner-key=<64-hex-private-key>
+./malairte-node --mine --miner-key=<64-hex-private-key>
 ```
 
 CPU mining works on any 64-bit CPU. It is more useful for testnet and for keeping a small chain decentralised than for chasing GPU-class hashrate.
@@ -169,7 +169,7 @@ For NVIDIA GPUs (compute capability 7.5+, RTX 20-series and newer), use the dedi
 
 ```bash
 # Windows — both files MUST live in the same directory
-malairted-windows-amd64-cuda.exe --mine --miner-key=<64-hex-private-key> --gpu
+malairte-node-windows-amd64-cuda.exe --mine --miner-key=<64-hex-private-key> --gpu
 # (mlrt_gpu.dll is loaded from the working directory at startup)
 ```
 
@@ -181,16 +181,16 @@ Generate a fresh wallet, take an address, and check balance:
 
 ```bash
 # Create a new wallet
-./malairtcli wallet create
+./malairte-cli wallet create
 
 # Get a receiving address (Base58Check, prefix "M")
-./malairtcli wallet getnewaddress
+./malairte-cli wallet getnewaddress
 
 # Check balance
-./malairtcli getbalance
+./malairte-cli getbalance
 
 # Send MLRT
-./malairtcli sendtoaddress MRxSEiJJ4FgHrUMMEMfTMeT6EmMDARE1AD 1.25
+./malairte-cli sendtoaddress MRxSEiJJ4FgHrUMMEMfTMeT6EmMDARE1AD 1.25
 ```
 
 For a desktop GUI experience use the [.NET MAUI wallet](#repository-layout); for mobile see the iOS / Android wallet. Both are self-custodial — keys never leave the device.
@@ -256,7 +256,7 @@ This repo (`malairte`) is the **Go core**: full node, CLI wallet, and CPU + CUDA
 
 | Folder | Purpose |
 | --- | --- |
-| [`cmd/`](cmd/) | Entrypoints — `cmd/malairted` (full node + miner), `cmd/malairtcli` (CLI wallet + RPC client) |
+| [`cmd/`](cmd/) | Entrypoints — `cmd/malairte-node` (full node + miner), `cmd/malairte-cli` (CLI wallet + RPC client) |
 | [`internal/consensus/`](internal/consensus/) | MLRTHash v1, difficulty, validation, chain rules |
 | [`internal/mining/`](internal/mining/) | CPU miner + CUDA GPU worker (`internal/mining/cuda/mlrt_gpu.cu`) |
 | [`internal/p2p/`](internal/p2p/) | Peer discovery, gossip, block + tx propagation |
@@ -280,11 +280,11 @@ This repo (`malairte`) is the **Go core**: full node, CLI wallet, and CPU + CUDA
 
 Compiled binaries are **never committed to this repo** — they are published as **[GitHub Release](https://github.com/computervirtualservices/malairte/releases) assets** with SHA-256 checksums and a detached GPG signature:
 
-- `malairted-windows-amd64.exe` (~20 MB) — CPU node + miner
-- `malairted-windows-amd64-cuda.exe` (~14 MB) + `mlrt_gpu.dll` (~750 KB) — CUDA GPU miner
-- `malairted-linux-amd64` (~20 MB), `malairted-linux-arm64` (~19 MB)
-- `malairted-darwin-amd64` (~21 MB), `malairted-darwin-arm64` (~20 MB)
-- `malairtcli-*` (~9–10 MB) for all five platforms
+- `malairte-node-windows-amd64.exe` (~20 MB) — CPU node + miner
+- `malairte-node-windows-amd64-cuda.exe` (~14 MB) + `mlrt_gpu.dll` (~750 KB) — CUDA GPU miner
+- `malairte-node-linux-amd64` (~20 MB), `malairte-node-linux-arm64` (~19 MB)
+- `malairte-node-darwin-amd64` (~21 MB), `malairte-node-darwin-arm64` (~20 MB)
+- `malairte-cli-*` (~9–10 MB) for all five platforms
 - `SHA256SUMS` and `SHA256SUMS.asc` — verify before running
 
 ---
@@ -298,12 +298,12 @@ git clone https://github.com/computervirtualservices/malairte.git
 cd malairte
 
 # CPU node + miner + CLI wallet (no GPU dependencies)
-go build -o bin/malairted   ./cmd/malairted
-go build -o bin/malairtcli  ./cmd/malairtcli
+go build -o bin/malairte-node   ./cmd/malairte-node
+go build -o bin/malairte-cli  ./cmd/malairte-cli
 
 # Cross-compile (no cgo needed for the CPU build)
-GOOS=linux  GOARCH=amd64 go build -o bin/malairted-linux-amd64   ./cmd/malairted
-GOOS=darwin GOARCH=arm64 go build -o bin/malairted-darwin-arm64  ./cmd/malairted
+GOOS=linux  GOARCH=amd64 go build -o bin/malairte-node-linux-amd64   ./cmd/malairte-node
+GOOS=darwin GOARCH=arm64 go build -o bin/malairte-node-darwin-arm64  ./cmd/malairte-node
 ```
 
 The bundled [`Makefile`](Makefile) wraps the common targets:

@@ -1,4 +1,4 @@
-# Build a CUDA-enabled malairted.exe on Windows.
+# Build a CUDA-enabled malairte-node.exe on Windows.
 #
 # Prerequisites:
 #   - NVIDIA CUDA Toolkit 12.x or 13.x  (nvcc on PATH)
@@ -11,7 +11,7 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\build-cuda-windows.ps1
 #
 # Produces:
-#   malairted-windows-amd64-cuda.exe  (self-contained, no libcudart runtime needed)
+#   malairte-node-windows-amd64-cuda.exe  (self-contained, no libcudart runtime needed)
 
 $ErrorActionPreference = 'Stop'
 
@@ -61,15 +61,15 @@ if ($LASTEXITCODE -ne 0) {
 }
 Ok "CUDA library built"
 
-# ── Build malairted.exe with -tags cuda ──────────────────────────────────────
+# ── Build malairte-node.exe with -tags cuda ──────────────────────────────────────
 Set-Location $RepoRoot
-Note "Building malairted-windows-amd64-cuda.exe ..."
+Note "Building malairte-node-windows-amd64-cuda.exe ..."
 $env:CGO_ENABLED = '1'
-& go build -tags cuda -o malairted-windows-amd64-cuda.exe .\cmd\malairted
+& go build -tags cuda -o malairte-node-windows-amd64-cuda.exe .\cmd\malairte-node
 if ($LASTEXITCODE -ne 0) { Fail "go build failed" }
 
-$size = [math]::Round((Get-Item malairted-windows-amd64-cuda.exe).Length / 1MB, 1)
-Ok "Built: malairted-windows-amd64-cuda.exe ($size MB)"
+$size = [math]::Round((Get-Item malairte-node-windows-amd64-cuda.exe).Length / 1MB, 1)
+Ok "Built: malairte-node-windows-amd64-cuda.exe ($size MB)"
 Write-Host ""
 Write-Host "Run it:"
-Write-Host "  .\malairted-windows-amd64-cuda.exe --mine --gpu --miner-key=<your-64-hex-key>" -ForegroundColor Yellow
+Write-Host "  .\malairte-node-windows-amd64-cuda.exe --mine --gpu --miner-key=<your-64-hex-key>" -ForegroundColor Yellow

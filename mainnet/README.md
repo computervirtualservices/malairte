@@ -21,35 +21,35 @@ The Malairt mainnet is the production network where MLRT tokens have real moneta
 
 ```bash
 # Default (mainnet)
-malairted
+malairte-node
 
 # Explicit mainnet with custom data dir
-malairted --network=mainnet --data-dir=/var/lib/malairted
+malairte-node --network=mainnet --data-dir=/var/lib/malairte-node
 ```
 
 ## Running a Mainnet Miner
 
 ```bash
 # Generate a new key first, then mine with it
-malairtcli genkey
+malairte-cli genkey
 # Save the private key output, then:
-malairted --mine --miner-key=<your-private-key-hex>
+malairte-node --mine --miner-key=<your-private-key-hex>
 ```
 
 ## RPC Examples
 
 ```bash
 # Get blockchain info
-malairtcli getinfo
+malairte-cli getinfo
 
 # Get balance of an address
-malairtcli validateaddress <address>
+malairte-cli validateaddress <address>
 
 # Send a raw transaction
-malairtcli sendrawtx <hex>
+malairte-cli sendrawtx <hex>
 
 # Get block by hash
-malairtcli getblock <hash>
+malairte-cli getblock <hash>
 ```
 
 ## Security Notes

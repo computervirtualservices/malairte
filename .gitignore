@@ -1,15 +1,20 @@
 # ── Compiled binaries (distributed via GitHub Releases, never in tree) ───────
 # Anchored to repo root with leading '/' so we don't accidentally ignore
-# cmd/malairted/ or cmd/malairtcli/ source packages.
-/malairtcli
-/malairtcli.exe
-/malairtcli-*
-/malairted
-/malairted.exe
-/malairted-*
+# cmd/malairte-node/ or cmd/malairte-cli/ source packages.
+/malairte-node
+/malairte-node.exe
+/malairte-node-*
+/malairte-cli
+/malairte-cli.exe
+/malairte-cli-*
 /mlrt_gpu.dll
 /mlrt_gpu.so
 /mlrt_gpu.dylib
+
+# ── Release artefacts (uploaded to GitHub Releases, drafted locally) ─────────
+/SHA256SUMS
+/SHA256SUMS.asc
+/RELEASE_NOTES_v*.md
 
 # ── Local Go build artefacts ─────────────────────────────────────────────────
 bin/

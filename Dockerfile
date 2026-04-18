@@ -17,19 +17,19 @@ RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux go build \
         -a -installsuffix cgo \
         -ldflags="-s -w" \
-        -o /bin/malairted ./cmd/malairted \
+        -o /bin/malairte-node ./cmd/malairte-node \
     && CGO_ENABLED=0 GOOS=linux go build \
         -a -installsuffix cgo \
         -ldflags="-s -w" \
-        -o /bin/malairtcli ./cmd/malairtcli
+        -o /bin/malairte-cli ./cmd/malairte-cli
 
 # ── Stage 2: Minimal runtime image ───────────────────────────────────────────
 FROM alpine:3.19
 
 RUN apk add --no-cache ca-certificates tzdata
 
-COPY --from=builder /bin/malairted  /usr/local/bin/malairted
-COPY --from=builder /bin/malairtcli /usr/local/bin/malairtcli
+COPY --from=builder /bin/malairte-node  /usr/local/bin/malairte-node
+COPY --from=builder /bin/malairte-cli /usr/local/bin/malairte-cli
 
 # P2P port
 EXPOSE 9333
@@ -40,5 +40,5 @@ RUN mkdir -p /data
 
 VOLUME ["/data"]
 
-ENTRYPOINT ["malairted"]
+ENTRYPOINT ["malairte-node"]
 CMD ["--data-dir=/data", "--network=mainnet"]

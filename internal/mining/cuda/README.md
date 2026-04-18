@@ -1,6 +1,6 @@
 # CUDA GPU miner for MLRTHash
 
-Native CUDA implementation of DoubleSHA3256, linked into `malairted` via CGO.
+Native CUDA implementation of DoubleSHA3256, linked into `malairte-node` via CGO.
 CPU-only builds ignore this directory completely.
 
 ## Prerequisites
@@ -35,15 +35,15 @@ make selftest               # prints DoubleSHA3256 of "", "abc", zeros[96]
 go run ./reference          # same inputs, Go's crypto.DoubleSHA3256
 #   → all three hashes must match byte-for-byte
 
-# 3. Build malairted with the cuda tag.
+# 3. Build malairte-node with the cuda tag.
 cd ../../..
-CGO_ENABLED=1 go build -tags cuda -o malairted.exe ./cmd/malairted
+CGO_ENABLED=1 go build -tags cuda -o malairte-node.exe ./cmd/malairte-node
 ```
 
 ## Run
 
 ```bash
-./malairted.exe --mine --gpu --miner-key=<64-hex-key>
+./malairte-node.exe --mine --gpu --miner-key=<64-hex-key>
 ```
 
 Expected log on startup:
