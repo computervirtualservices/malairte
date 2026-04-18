@@ -189,6 +189,22 @@ func (bc *Blockchain) ProcessBlock(block *primitives.Block) error {
 		return fmt.Errorf("block %x already exists", hash)
 	}
 
+	// Only accept blocks that extend the current tip. Without proper reorg
+	// logic, accepting same-height forks would corrupt the height→hash index
+	// (each thread of a parallel miner produces a competing block at the same
+	// height, and overwriting the index breaks all descendants).
+	if block.Header.Height > 0 {
+		currentTip := bc.tip.Hash()
+		if block.Header.PreviousHash != currentTip {
+			return fmt.Errorf("block does not extend current tip (parent=%x tip=%x)",
+				block.Header.PreviousHash, currentTip)
+		}
+		if block.Header.Height != bc.height+1 {
+			return fmt.Errorf("block height %d is not tip+1 (tip=%d)",
+				block.Header.Height, bc.height)
+		}
+	}
+
 	// Get previous block header for validation
 	var prevHeader *primitives.BlockHeader
 	if block.Header.Height > 0 {
