@@ -39,7 +39,7 @@ func NewPeer(conn net.Conn, params *chain.ChainParams, inbound bool) *Peer {
 		conn:     conn,
 		addr:     conn.RemoteAddr().String(),
 		inbound:  inbound,
-		outbound: make(chan *NetMessage, 64),
+		outbound: make(chan *NetMessage, 2048),
 		quit:     make(chan struct{}),
 		params:   params,
 	}
@@ -59,13 +59,26 @@ func (p *Peer) Start(msgCh chan<- PeerMessage) <-chan struct{} {
 }
 
 // Send queues a message to be sent to this peer.
-// Drops the message if the peer's send queue is full.
+// For relay-style traffic (inv, block, tx) that's safe to drop under pressure
+// we fall back to dropping when the queue is full. For control messages that
+// are critical to sync (getblocks, getheaders, getdata, version, verack) we
+// wait briefly so these aren't starved by block-broadcast spam.
 func (p *Peer) Send(msg *NetMessage) {
-	select {
-	case p.outbound <- msg:
-	case <-p.quit:
+	switch msg.Command {
+	case CmdGetBlocks, CmdGetData, CmdVersion, CmdVerAck, CmdHeaders:
+		select {
+		case p.outbound <- msg:
+		case <-p.quit:
+		case <-time.After(2 * time.Second):
+			log.Printf("[peer %s] send queue blocked for 2s, dropping %s message", p.addr, msg.Command)
+		}
 	default:
-		log.Printf("[peer %s] send queue full, dropping %s message", p.addr, msg.Command)
+		select {
+		case p.outbound <- msg:
+		case <-p.quit:
+		default:
+			log.Printf("[peer %s] send queue full, dropping %s message", p.addr, msg.Command)
+		}
 	}
 }
 

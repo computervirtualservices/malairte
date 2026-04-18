@@ -89,6 +89,7 @@ func main() {
 
 	// 6. NewPeerServer
 	peerSrv := network.NewPeerServer(bc, pool, params)
+	peerSrv.SetMaxPeers(cfg.MaxPeers)
 
 	// 7. Start P2P server
 	if err := peerSrv.Start(cfg.P2PAddr); err != nil {

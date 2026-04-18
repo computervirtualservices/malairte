@@ -5,6 +5,7 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,33 +21,47 @@ const protocolVersion uint32 = 70001
 // userAgent is the software version string sent in version messages.
 const userAgent = "/Malairted:0.1.0/"
 
-// maxPeers is the default maximum number of simultaneous peer connections.
-const maxPeers = 125
+// defaultMaxPeers is the fallback cap on simultaneous P2P connections when
+// the caller does not set a value via SetMaxPeers.
+const defaultMaxPeers = 125
 
 // PeerServer manages all inbound and outbound peer connections.
 // It processes incoming messages and coordinates chain sync.
 type PeerServer struct {
-	bc       *chain.Blockchain
-	pool     *mempool.TxPool
-	params   *chain.ChainParams
-	peers    map[string]*Peer
-	mu       sync.RWMutex
-	listen   net.Listener
-	msgCh    chan PeerMessage
-	quit     chan struct{}
-	stopOnce sync.Once
+	bc           *chain.Blockchain
+	pool         *mempool.TxPool
+	params       *chain.ChainParams
+	peers        map[string]*Peer
+	mu           sync.RWMutex
+	listen       net.Listener
+	msgCh        chan PeerMessage
+	quit         chan struct{}
+	stopOnce     sync.Once
+	maxPeers     int
+	lastSyncReq  time.Time // last time any getblocks was sent for sync
+	syncReqMu    sync.Mutex
 }
 
 // NewPeerServer creates a new P2P server.
 func NewPeerServer(bc *chain.Blockchain, pool *mempool.TxPool, params *chain.ChainParams) *PeerServer {
 	return &PeerServer{
-		bc:     bc,
-		pool:   pool,
-		params: params,
-		peers:  make(map[string]*Peer),
-		msgCh:  make(chan PeerMessage, 256),
-		quit:   make(chan struct{}),
+		bc:       bc,
+		pool:     pool,
+		params:   params,
+		peers:    make(map[string]*Peer),
+		msgCh:    make(chan PeerMessage, 256),
+		quit:     make(chan struct{}),
+		maxPeers: defaultMaxPeers,
 	}
+}
+
+// SetMaxPeers overrides the default inbound-peer cap. Values < 1 are ignored.
+// Must be called before Start().
+func (s *PeerServer) SetMaxPeers(n int) {
+	if n < 1 {
+		return
+	}
+	s.maxPeers = n
 }
 
 // Start begins listening for inbound connections and processing messages.
@@ -67,6 +82,9 @@ func (s *PeerServer) Start(addr string) error {
 
 	// Start keepalive/ping loop
 	go s.pingLoop()
+
+	// Periodically check if any peer is ahead of us and pull their chain.
+	go s.syncLoop()
 
 	return nil
 }
@@ -172,8 +190,8 @@ func (s *PeerServer) acceptLoop() {
 			}
 		}
 
-		if s.PeerCount() >= maxPeers {
-			log.Printf("[p2p] max peers reached, rejecting %s", conn.RemoteAddr())
+		if s.PeerCount() >= s.maxPeers {
+			log.Printf("[p2p] max peers reached (%d), rejecting %s", s.maxPeers, conn.RemoteAddr())
 			conn.Close()
 			continue
 		}
@@ -345,7 +363,14 @@ func (s *PeerServer) handleBlock(peer *Peer, payload []byte) {
 	}
 	hash := blockMsg.Block.Header.Hash()
 	if err := s.bc.ProcessBlock(blockMsg.Block); err != nil {
-		log.Printf("[p2p] rejected block %x from %s: %v", hash, peer.Addr(), err)
+		// Orphan recovery: if the parent is unknown, ask the peer for the
+		// missing chain. Throttled so a fast-mining peer can't saturate our
+		// send queue with redundant getblocks requests.
+		if isMissingParentErr(err) {
+			s.maybeRequestSync(peer)
+		} else {
+			log.Printf("[p2p] rejected block %x from %s: %v", hash, peer.Addr(), err)
+		}
 		return
 	}
 	s.pool.RemoveBlock(blockMsg.Block)
@@ -354,6 +379,70 @@ func (s *PeerServer) handleBlock(peer *Peer, payload []byte) {
 	// Relay the block to other peers
 	inv := []InvVect{{Type: InvTypeBlock, Hash: hash}}
 	s.broadcastExcept(CmdInv, (&InvMsg{Items: inv}).Encode(), peer.Addr())
+}
+
+// isMissingParentErr returns true when ProcessBlock rejected the block because
+// either the parent header is not in storage OR the block does not extend our
+// current tip (meaning we're behind on the chain). Both cases should trigger
+// a sync request.
+func isMissingParentErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "get previous header") ||
+		strings.Contains(msg, "does not extend current tip") ||
+		strings.Contains(msg, "is not tip+1")
+}
+
+// maybeRequestSync sends a getblocks to the given peer at most once per
+// syncThrottle interval. This is the hot path when a fast miner broadcasts
+// blocks we can't yet chain; without throttling, every rejected block would
+// enqueue another getblocks and saturate the peer's send buffer.
+const syncThrottle = 10 * time.Second
+
+func (s *PeerServer) maybeRequestSync(peer *Peer) {
+	s.syncReqMu.Lock()
+	if time.Since(s.lastSyncReq) < syncThrottle {
+		s.syncReqMu.Unlock()
+		return
+	}
+	s.lastSyncReq = time.Now()
+	s.syncReqMu.Unlock()
+
+	locator := s.BlockLocator()
+	peer.Send(&NetMessage{Command: CmdGetBlocks, Payload: (&GetBlocksMsg{BlockLocator: locator}).Encode()})
+	log.Printf("[p2p] sync: requesting blocks from %s (our height=%d)", peer.Addr(), s.bc.BestHeight())
+}
+
+// syncLoop periodically checks connected peers; if any advertises a higher
+// startheight than our tip and we haven't recently requested sync, send a
+// getblocks to pull their chain. Covers the case where a peer's new-block
+// broadcast never reaches us (dropped due to saturation, etc.).
+func (s *PeerServer) syncLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.quit:
+			return
+		case <-ticker.C:
+			ourHeight := s.bc.BestHeight()
+			var bestPeer *Peer
+			var bestHeight int32
+			s.mu.RLock()
+			for _, p := range s.peers {
+				if p.StartHeight() > bestHeight {
+					bestHeight = p.StartHeight()
+					bestPeer = p
+				}
+			}
+			s.mu.RUnlock()
+			if bestPeer != nil && uint64(bestHeight) > ourHeight {
+				s.maybeRequestSync(bestPeer)
+			}
+		}
+	}
 }
 
 func (s *PeerServer) handleTx(peer *Peer, payload []byte) {
@@ -491,15 +580,56 @@ func (s *PeerServer) removePeer(addr string) {
 	delete(s.peers, addr)
 }
 
-// ConnectSeeds attempts to connect to a list of seed peer addresses.
+// ConnectSeeds starts a reconnect loop for each seed address. Each loop
+// dials on startup and, whenever the connection to that seed is absent,
+// retries at an increasing backoff. Runs for the lifetime of the server.
 func (s *PeerServer) ConnectSeeds(seeds []string) {
 	for _, seed := range seeds {
-		go func(addr string) {
-			if err := s.ConnectPeer(addr); err != nil {
-				log.Printf("[p2p] failed to connect to seed %s: %v", addr, err)
-			}
-		}(seed)
+		go s.seedReconnectLoop(seed)
 	}
+}
+
+// seedReconnectLoop dials addr and keeps it connected. If the peer disconnects,
+// it waits (with exponential backoff up to 60s) and tries again. Exits when
+// the server shuts down.
+func (s *PeerServer) seedReconnectLoop(addr string) {
+	backoff := 5 * time.Second
+	const maxBackoff = 60 * time.Second
+	for {
+		if s.hasPeer(addr) {
+			backoff = 5 * time.Second
+			select {
+			case <-s.quit:
+				return
+			case <-time.After(10 * time.Second):
+				continue
+			}
+		}
+		if err := s.ConnectPeer(addr); err != nil {
+			log.Printf("[p2p] seed %s dial failed: %v (retry in %s)", addr, err, backoff)
+			select {
+			case <-s.quit:
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < maxBackoff {
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			}
+			continue
+		}
+		backoff = 5 * time.Second
+	}
+}
+
+// hasPeer returns true if a peer with the given address is currently connected.
+func (s *PeerServer) hasPeer(addr string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.peers[addr]
+	return ok
 }
 
 // BlockLocator builds a Bitcoin-style block locator list from the current chain tip.
