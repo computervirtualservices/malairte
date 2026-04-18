@@ -19,7 +19,7 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
   <a href="https://malairtebitcoin.com"><img alt="Site" src="https://img.shields.io/badge/site-malairtebitcoin.com-0a7"></a>
   <a href="https://explorer.malairtebitcoin.com"><img alt="Explorer" src="https://img.shields.io/badge/explorer-live-0a7"></a>
-  <a href="https://discord.gg/malairte"><img alt="Discord" src="https://img.shields.io/badge/chat-discord-5865F2"></a>
+  <a href="https://discord.gg/EmZxwvMu"><img alt="Discord" src="https://img.shields.io/badge/chat-discord-5865F2"></a>
 </p>
 
 ---
@@ -449,7 +449,7 @@ This repository is licensed under the **Apache License 2.0** — see [`LICENSE`]
 - **Security policy:** <https://malairtebitcoin.com/security>
 - **Press kit:** <https://malairtebitcoin.com/press-kit>
 - **GitHub releases:** <https://github.com/computervirtualservices/malairte/releases>
-- **Discord:** <https://discord.gg/malairte>
+- **Discord:** <https://discord.gg/EmZxwvMu>
 - **X / Twitter:** <https://x.com/malairtebitcoin>
 - **Mastodon:** <https://fosstodon.org/@malairte>
 
