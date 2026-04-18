@@ -396,10 +396,87 @@ func (s *Server) getMiningInfo(_ []interface{}) (interface{}, *rpcError) {
 		"difficulty":       difficulty,
 		"errors":           "",
 		"hashespersec":     hashRate,
+		"networkhashps":    s.computeNetworkHashps(120),
 		"pooledtx":         s.pool.Count(),
 		"chain":            s.params.Name,
 		"generate":         minerRunning,
 	}, nil
+}
+
+// getNetworkHashps returns the estimated network hashrate in hashes per second,
+// computed from the last `blocks` headers (default 120). Bitcoin-compatible.
+// Params: [blocks int = 120, height int = -1 (tip)]
+func (s *Server) getNetworkHashps(params []interface{}) (interface{}, *rpcError) {
+	blocks := 120
+	if len(params) >= 1 {
+		if n, err := toUint64(params[0]); err == nil && n > 0 {
+			blocks = int(n)
+		}
+	}
+	return s.computeNetworkHashps(blocks), nil
+}
+
+// computeNetworkHashps estimates the network hashrate from the last `blocks`
+// headers on the current chain. Sums work (2^256 / (target+1)) per block and
+// divides by the observed time span between the first and last headers in the
+// window. Returns 0 if the chain is too short or timestamps are degenerate.
+func (s *Server) computeNetworkHashps(blocks int) float64 {
+	tip := s.bc.BestHeight()
+	if tip == 0 {
+		return 0
+	}
+	if blocks <= 0 {
+		blocks = 120
+	}
+	if uint64(blocks) > tip {
+		blocks = int(tip)
+	}
+
+	startHeight := tip - uint64(blocks)
+	startHash, err := s.bc.GetBlockHashAtHeight(startHeight)
+	if err != nil {
+		return 0
+	}
+	startHeader, err := s.bc.GetBlockHeader(startHash)
+	if err != nil {
+		return 0
+	}
+	tipHash, err := s.bc.GetBlockHashAtHeight(tip)
+	if err != nil {
+		return 0
+	}
+	tipHeader, err := s.bc.GetBlockHeader(tipHash)
+	if err != nil {
+		return 0
+	}
+
+	timeSpan := tipHeader.Timestamp - startHeader.Timestamp
+	if timeSpan <= 0 {
+		return 0
+	}
+
+	max256 := new(big.Int).Lsh(big.NewInt(1), 256)
+	totalWork := new(big.Int)
+	one := big.NewInt(1)
+	for h := startHeight + 1; h <= tip; h++ {
+		hash, err := s.bc.GetBlockHashAtHeight(h)
+		if err != nil {
+			continue
+		}
+		hdr, err := s.bc.GetBlockHeader(hash)
+		if err != nil {
+			continue
+		}
+		target := consensus.CompactToBig(hdr.Bits)
+		if target.Sign() <= 0 {
+			continue
+		}
+		work := new(big.Int).Div(max256, new(big.Int).Add(target, one))
+		totalWork.Add(totalWork, work)
+	}
+
+	workFloat, _ := new(big.Float).SetInt(totalWork).Float64()
+	return workFloat / float64(timeSpan)
 }
 
 // validateAddress validates an address and returns information about it.

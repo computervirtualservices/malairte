@@ -177,6 +177,8 @@ func (s *Server) dispatch(method string, params []interface{}) (interface{}, *rp
 		return s.getNetworkInfo(params)
 	case "getmininginfo":
 		return s.getMiningInfo(params)
+	case "getnetworkhashps":
+		return s.getNetworkHashps(params)
 	case "validateaddress":
 		return s.validateAddress(params)
 	case "getaddresstransactions":
