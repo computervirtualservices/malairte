@@ -160,8 +160,21 @@ func (m *CpuMiner) mineLoop(threadID int) {
 			}
 		}()
 
-		found := consensus.MineBlock(ctx, &tmpl.Header, nil)
-		m.totalHashes.Add(int64(tmpl.Header.Nonce) + 1)
+		// Feed incremental progress into totalHashes so hashrateLoop sees a
+		// non-zero delta every second, even for long block attempts.
+		var lastReported uint64
+		found := consensus.MineBlock(ctx, &tmpl.Header, func(nonce uint64) {
+			m.totalHashes.Add(int64(nonce - lastReported))
+			lastReported = nonce
+		})
+		// Account for the tail since the last progress tick (plus the winning hash if found).
+		finalHashes := tmpl.Header.Nonce
+		if found {
+			finalHashes++
+		}
+		if finalHashes >= lastReported {
+			m.totalHashes.Add(int64(finalHashes - lastReported))
+		}
 
 		cancel()
 
