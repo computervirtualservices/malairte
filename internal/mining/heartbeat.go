@@ -15,11 +15,19 @@ import (
 // hashrate) to the explorer every Interval. The explorer uses the presence
 // of recent heartbeats to show a rig as "Active" on the miner dashboard —
 // the lagging "block mined in last N minutes" signal was too noisy on small
-// networks. If URL or Token is empty the sender is disabled and Start is a
+// networks.
+//
+// Auth model: the sender includes the miner's compressed secp256k1 pubkey
+// (derived from the --miner-key on the node side). The server verifies
+// hash160(pubkey) matches the claimed address before recording. No separate
+// API token is required — possession of the pubkey that hashes to the
+// address is sufficient, and spoofing only affects the cosmetic Active dot.
+//
+// If URL, Address, or PubKey is empty the sender is disabled and Start is a
 // no-op so main.go can unconditionally construct one.
 type HeartbeatSender struct {
 	URL      string
-	Token    string
+	PubKey   string // hex-encoded compressed secp256k1 pubkey (66 chars)
 	Address  string
 	WorkerID string
 	Interval time.Duration
@@ -37,13 +45,13 @@ type HeartbeatSender struct {
 // NewHeartbeatSender builds a sender that reads the current hashrate from
 // rateFn on every tick. Pass a nil rateFn to report 0 (useful for a
 // bare-node heartbeat).
-func NewHeartbeatSender(url, token, address, workerID string, rateFn func() int64) *HeartbeatSender {
+func NewHeartbeatSender(url, pubKeyHex, address, workerID string, rateFn func() int64) *HeartbeatSender {
 	if rateFn == nil {
 		rateFn = func() int64 { return 0 }
 	}
 	return &HeartbeatSender{
 		URL:      url,
-		Token:    token,
+		PubKey:   pubKeyHex,
 		Address:  address,
 		WorkerID: workerID,
 		Interval: 60 * time.Second,
@@ -56,7 +64,7 @@ func NewHeartbeatSender(url, token, address, workerID string, rateFn func() int6
 // Enabled reports whether the sender has enough configuration to ping. When
 // false Start is a no-op.
 func (h *HeartbeatSender) Enabled() bool {
-	return h.URL != "" && h.Token != "" && h.Address != ""
+	return h.URL != "" && h.PubKey != "" && h.Address != ""
 }
 
 // Start launches the background goroutine. Calling Start twice is a no-op.
@@ -106,6 +114,7 @@ func (h *HeartbeatSender) loop(ctx context.Context) {
 func (h *HeartbeatSender) send(ctx context.Context) {
 	payload := map[string]any{
 		"address":   h.Address,
+		"pubkey":    h.PubKey,
 		"worker_id": h.WorkerID,
 		"hashrate":  h.rateFn(),
 	}
@@ -125,7 +134,6 @@ func (h *HeartbeatSender) send(ctx context.Context) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+h.Token)
 
 	resp, err := h.client.Do(req)
 	if err != nil {

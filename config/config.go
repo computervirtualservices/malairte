@@ -49,10 +49,10 @@ type Config struct {
 	// HeartbeatURL is the explorer endpoint that receives miner status pings.
 	// When empty, no heartbeats are sent. Typically
 	// "https://explorer.malairtebitcoin.com/api/v1/miner/heartbeat".
+	// The node authenticates by including its compressed pubkey (derived from
+	// MinerKey) in each ping; the server verifies hash160(pubkey) matches the
+	// claimed address. No separate API token is needed.
 	HeartbeatURL string
-	// HeartbeatToken is the per-user API token issued by the explorer during
-	// onboarding. Required when HeartbeatURL is set.
-	HeartbeatToken string
 	// HeartbeatWorker is an optional human-readable identifier for this rig
 	// (e.g. "gpu-rig-1"). Lets a single account aggregate several workers.
 	HeartbeatWorker string
@@ -115,10 +115,14 @@ func LoadConfig() (*Config, error) {
 			"Ignored when --payout-addr is empty")
 	flag.StringVar(&cfg.HeartbeatURL, "heartbeat-url", cfg.HeartbeatURL,
 		"Explorer endpoint that receives miner status pings. When empty no "+
-			"heartbeats are sent")
-	flag.StringVar(&cfg.HeartbeatToken, "heartbeat-token", cfg.HeartbeatToken,
-		"Per-user API token issued by the explorer during onboarding. "+
-			"Required when --heartbeat-url is set")
+			"heartbeats are sent. Auth uses the pubkey derived from --miner-key "+
+			"— no separate API token needed")
+	// Deprecated: --heartbeat-token is accepted but ignored; the node now
+	// authenticates via its compressed pubkey. Remove in a future release.
+	var deprecatedToken string
+	flag.StringVar(&deprecatedToken, "heartbeat-token", "",
+		"Deprecated: ignored. The node now authenticates with its pubkey "+
+			"derived from --miner-key")
 	flag.StringVar(&cfg.HeartbeatWorker, "heartbeat-worker", cfg.HeartbeatWorker,
 		"Optional worker identifier used when reporting to --heartbeat-url "+
 			"(e.g. \"gpu-rig-1\")")

@@ -144,11 +144,12 @@ func main() {
 		}
 
 		// Optional heartbeat: when --heartbeat-url is set, ping the explorer
-		// every 60s with the miner's address and current hashrate so the
-		// dashboard can show this rig as Active.
+		// every 60s with the miner's address, pubkey, and current hashrate so
+		// the dashboard can show this rig as Active. The server verifies
+		// hash160(pubkey) == address, so no separate token is required.
 		if cfg.HeartbeatURL != "" {
 			hb := mining.NewHeartbeatSender(
-				cfg.HeartbeatURL, cfg.HeartbeatToken, addr, cfg.HeartbeatWorker,
+				cfg.HeartbeatURL, hex.EncodeToString(pubKey), addr, cfg.HeartbeatWorker,
 				func() int64 { return miner.HashRate.Load() },
 			)
 			hb.Start()
