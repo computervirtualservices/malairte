@@ -46,6 +46,16 @@ type Config struct {
 	// PayoutThresholdAtoms is the minimum unspent balance (in atoms) that
 	// triggers a sweep. Default 100_000_000_000 = 1000 MLRT.
 	PayoutThresholdAtoms int64
+	// HeartbeatURL is the explorer endpoint that receives miner status pings.
+	// When empty, no heartbeats are sent. Typically
+	// "https://explorer.malairtebitcoin.com/api/v1/miner/heartbeat".
+	HeartbeatURL string
+	// HeartbeatToken is the per-user API token issued by the explorer during
+	// onboarding. Required when HeartbeatURL is set.
+	HeartbeatToken string
+	// HeartbeatWorker is an optional human-readable identifier for this rig
+	// (e.g. "gpu-rig-1"). Lets a single account aggregate several workers.
+	HeartbeatWorker string
 }
 
 // DefaultConfig returns a Config with sensible production defaults.
@@ -103,6 +113,15 @@ func LoadConfig() (*Config, error) {
 	flag.Int64Var(&cfg.PayoutThresholdAtoms, "payout-threshold", cfg.PayoutThresholdAtoms,
 		"Sweep threshold in atoms (default 100_000_000_000 = 1000 MLRT). "+
 			"Ignored when --payout-addr is empty")
+	flag.StringVar(&cfg.HeartbeatURL, "heartbeat-url", cfg.HeartbeatURL,
+		"Explorer endpoint that receives miner status pings. When empty no "+
+			"heartbeats are sent")
+	flag.StringVar(&cfg.HeartbeatToken, "heartbeat-token", cfg.HeartbeatToken,
+		"Per-user API token issued by the explorer during onboarding. "+
+			"Required when --heartbeat-url is set")
+	flag.StringVar(&cfg.HeartbeatWorker, "heartbeat-worker", cfg.HeartbeatWorker,
+		"Optional worker identifier used when reporting to --heartbeat-url "+
+			"(e.g. \"gpu-rig-1\")")
 
 	flag.Parse()
 

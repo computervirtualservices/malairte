@@ -143,6 +143,18 @@ func main() {
 			log.Printf("CPU miner started with %d thread(s)", cfg.MineThreads)
 		}
 
+		// Optional heartbeat: when --heartbeat-url is set, ping the explorer
+		// every 60s with the miner's address and current hashrate so the
+		// dashboard can show this rig as Active.
+		if cfg.HeartbeatURL != "" {
+			hb := mining.NewHeartbeatSender(
+				cfg.HeartbeatURL, cfg.HeartbeatToken, addr, cfg.HeartbeatWorker,
+				func() int64 { return miner.HashRate.Load() },
+			)
+			hb.Start()
+			defer hb.Stop()
+		}
+
 		// Optional auto-payout sweep: when --payout-addr is set, periodically
 		// sweep the miner's UTXOs to the destination once they reach threshold.
 		// Default fee 1000 atoms = 0.00001 MLRT per sweep — keeps the fee market
