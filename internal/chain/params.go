@@ -61,7 +61,7 @@ var MainNetParams = ChainParams{
 	AdminFeeAtoms:    10,                                  // 0.0000001 MLRT per coinbase + per tx
 	AddressVersion:   50,                                  // Base58Check prefix "M"
 	GenesisBits:      0x207fffff,
-	GenesisTimestamp: 1_776_472_889, // 2026-04-18 00:41:29 UTC — mainnet bootstrap
+	GenesisTimestamp: 1_776_610_968, // 2026-04-19 15:02:48 UTC — mainnet re-bootstrap
 	Checkpoints:      map[uint64][32]byte{},
 	// SeedPeers will be populated once public bootstrap nodes are deployed.
 	SeedPeers: []string{},
