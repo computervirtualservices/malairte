@@ -80,6 +80,16 @@ func ValidateBlock(block *primitives.Block, prevHeader *primitives.BlockHeader, 
 		return errors.New("block has no transactions")
 	}
 
+	// Enforce block weight limit. Pre-SegWit this is equivalent to a byte-size
+	// cap of MaxBlockWeight/WitnessScaleFactor; post-SegWit it prices the
+	// witness discount correctly. The check precedes per-tx validation so that
+	// a deliberately oversized block is rejected cheaply.
+	if params.MaxBlockWeight > 0 {
+		if w := block.Weight(); w > params.MaxBlockWeight {
+			return fmt.Errorf("block weight %d exceeds maximum %d", w, params.MaxBlockWeight)
+		}
+	}
+
 	// First transaction must be a coinbase
 	if !block.Txs[0].IsCoinbase() {
 		return errors.New("first transaction is not a coinbase")
@@ -109,6 +119,21 @@ func ValidateBlock(block *primitives.Block, prevHeader *primitives.BlockHeader, 
 	if coinbaseOut > maxReward {
 		return fmt.Errorf("coinbase output %d exceeds maximum reward %d at height %d",
 			coinbaseOut, maxReward, block.Header.Height)
+	}
+
+	// BIP-141 witness commitment: every block's coinbase MUST carry a witness
+	// commitment output (OP_RETURN 0x24 0xaa21a9ed <32-byte hash>) whose payload
+	// equals ComputeWitnessCommitment over the block's transactions. Exempts
+	// the genesis block, which has no commitment by construction.
+	if block.Header.Height > 0 {
+		got, ok := primitives.ExtractWitnessCommitment(coinbaseTx)
+		if !ok {
+			return errors.New("coinbase missing required witness commitment output")
+		}
+		want := primitives.ComputeWitnessCommitment(block.Txs)
+		if got != want {
+			return fmt.Errorf("witness commitment mismatch: got %x, want %x", got, want)
+		}
 	}
 
 	// Enforce admin protocol fee on every block past genesis: the coinbase
@@ -182,8 +207,13 @@ func ValidateTx(tx *primitives.Transaction, utxo *UTXOSet, height uint64, params
 		}
 	}
 
-	// Validate inputs: UTXO existence, coinbase maturity, value, and script execution.
-	// P2PKH inputs are fully verified by the script engine; other types pass permissively.
+	// First pass: resolve every input's UTXO, verify coinbase maturity, and
+	// accumulate totalIn. Also collect each input's scriptPubKey and value
+	// into flat vectors for BIP-341 taproot sighash (which commits to every
+	// spent UTXO, not just the one at the current input).
+	prevoutScripts := make([][]byte, len(tx.Inputs))
+	prevoutAmounts := make([]int64, len(tx.Inputs))
+	utxoEntries := make([]*UTXO, len(tx.Inputs))
 	var totalIn int64
 	for i, in := range tx.Inputs {
 		utxoEntry, found := utxo.Get(in.PreviousOutput)
@@ -191,22 +221,62 @@ func ValidateTx(tx *primitives.Transaction, utxo *UTXOSet, height uint64, params
 			return fmt.Errorf("input %d references non-existent UTXO %x:%d",
 				i, in.PreviousOutput.TxID, in.PreviousOutput.Index)
 		}
-
-		// Coinbase maturity check: coinbase outputs require 100 confirmations
 		if utxoEntry.IsCoinbase && height-utxoEntry.Height < 100 {
 			return fmt.Errorf("input %d spends immature coinbase output (height %d, current %d)",
 				i, utxoEntry.Height, height)
 		}
-
+		// BIP-68 relative timelock (block-based variant).
+		//
+		// Applies when tx.Version ≥ 2. The nSequence field encodes a
+		// relative timelock per input unless bit 31 (disable flag) is set.
+		// Bit 22 distinguishes block-based (clear) from time-based (set)
+		// delays; we implement block-based only, which is the common
+		// case — time-based would additionally require reading the
+		// prevout's median-time-past, which we don't index yet.
+		//
+		// For block-based locks: the low 16 bits of nSequence are the
+		// minimum number of confirmations the prevout must have before
+		// this input may spend it.
+		if tx.Version >= 2 {
+			const (
+				seqDisable = uint32(1) << 31
+				seqType    = uint32(1) << 22
+			)
+			if in.Sequence&seqDisable == 0 && in.Sequence&seqType == 0 {
+				required := uint64(in.Sequence & 0x0000ffff)
+				if height < utxoEntry.Height+required {
+					return fmt.Errorf(
+						"input %d: BIP-68 relative timelock not satisfied: "+
+							"prevout confirmed at height %d, needs %d confirmations, "+
+							"current height %d",
+						i, utxoEntry.Height, required, height)
+				}
+			}
+		}
 		totalIn += utxoEntry.Value
 		if totalIn < 0 {
 			return errors.New("input value overflow")
 		}
+		prevoutScripts[i] = utxoEntry.Script
+		prevoutAmounts[i] = utxoEntry.Value
+		utxoEntries[i] = utxoEntry
+	}
 
-		// Script execution: verify scriptSig unlocks the UTXO's locking script
-		if err := ExecuteScript(in.ScriptSig, utxoEntry.Script, tx, i); err != nil {
+	// Second pass: script execution. Runs after prevouts are assembled so
+	// that taproot inputs can commit to the full spent-UTXO vector.
+	for i, in := range tx.Inputs {
+		if err := ExecuteScript(
+			in.ScriptSig,
+			utxoEntries[i].Script,
+			tx, i,
+			utxoEntries[i].Value,
+			prevoutScripts,
+			prevoutAmounts,
+			params.Net,
+		); err != nil {
 			return fmt.Errorf("input %d script failure: %w", i, err)
 		}
+		_ = in // keep loop variable referenced for readability
 	}
 
 	// Inputs must cover outputs (fee is totalIn - totalOut, must be >= 0)

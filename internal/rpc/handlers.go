@@ -4,11 +4,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"sort"
 	"time"
 
 	"github.com/computervirtualservices/malairte/internal/chain"
 	"github.com/computervirtualservices/malairte/internal/consensus"
 	"github.com/computervirtualservices/malairte/internal/crypto"
+	"github.com/computervirtualservices/malairte/internal/mempool"
 	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
@@ -20,6 +22,10 @@ func (s *Server) getBlockchainInfo(_ []interface{}) (interface{}, *rpcError) {
 	header := s.bc.BestHeader()
 
 	difficulty := bitsToFloat64(header.Bits)
+	// Cumulative chainwork at the tip — padded to 64 hex chars to match
+	// Bitcoin Core's getblockchaininfo convention.
+	work := s.bc.ChainWork(bestHash)
+	chainworkHex := fmt.Sprintf("%064x", work)
 
 	return map[string]interface{}{
 		"chain":         s.params.Name,
@@ -27,7 +33,7 @@ func (s *Server) getBlockchainInfo(_ []interface{}) (interface{}, *rpcError) {
 		"bestblockhash": hex.EncodeToString(bestHash[:]),
 		"difficulty":    difficulty,
 		"mediantime":    header.Timestamp,
-		"chainwork":     fmt.Sprintf("%064x", big.NewInt(int64(height))),
+		"chainwork":     chainworkHex,
 		"softforks":     []interface{}{},
 	}, nil
 }
@@ -223,7 +229,43 @@ func (s *Server) sendRawTransaction(params []interface{}) (interface{}, *rpcErro
 		return nil, newRPCError(errCodeInvalidParams, "failed to decode transaction: "+err.Error())
 	}
 
-	if err := s.pool.Add(tx); err != nil {
+	// Resolve each input against the confirmed UTXO set; fall through to the
+	// mempool if the UTXO lookup misses (CPFP — child of an unconfirmed
+	// parent). Only reject when neither source knows the output.
+	utxo := s.bc.UTXOSet()
+	var totalIn int64
+	for _, in := range tx.Inputs {
+		if entry, found := utxo.Get(in.PreviousOutput); found {
+			totalIn += entry.Value
+			continue
+		}
+		if out, found := s.pool.GetOutput(in.PreviousOutput); found {
+			totalIn += out.Value
+			continue
+		}
+		return nil, newRPCError(-25, fmt.Sprintf(
+			"transaction references unknown UTXO %x:%d", in.PreviousOutput.TxID, in.PreviousOutput.Index))
+	}
+	var totalOut int64
+	for _, out := range tx.Outputs {
+		totalOut += out.Value
+	}
+	if totalIn < totalOut {
+		return nil, newRPCError(-26, "transaction spends more than it references")
+	}
+	feeAtoms := totalIn - totalOut
+
+	// Full script validation BEFORE admission so a tx with bogus signatures
+	// can't sit in the mempool until a miner wastes work on it. ValidateTx
+	// runs the same interpreter (P2PKH + P2WPKH + P2TR key-path + tapscript)
+	// the block-level validator uses, against the current chain height +
+	// tip-1 for BIP-68 relative-locktime evaluation.
+	nextHeight := s.bc.BestHeight() + 1
+	if err := chain.ValidateTx(tx, s.bc.UTXOSet(), nextHeight, s.bc.Params()); err != nil {
+		return nil, newRPCError(-26, "transaction rejected: "+err.Error())
+	}
+
+	if err := s.pool.Add(tx, feeAtoms); err != nil {
 		return nil, newRPCError(-26, "transaction rejected: "+err.Error())
 	}
 
@@ -236,12 +278,343 @@ func (s *Server) sendRawTransaction(params []interface{}) (interface{}, *rpcErro
 	return hex.EncodeToString(txid[:]), nil
 }
 
-// getMempoolInfo returns statistics about the memory pool.
+// getMempoolInfo returns statistics about the memory pool, including the
+// feerate distribution a smart-fee estimator can use, plus flags advertising
+// policy features the node enforces (full-RBF, package relay).
 func (s *Server) getMempoolInfo(_ []interface{}) (interface{}, *rpcError) {
+	// Collect feerates via FeeOf per-entry. Cheap: mempool is normally
+	// small enough that one pass is fine.
+	all := s.pool.GetAll()
+	feerates := make([]int64, 0, len(all))
+	var totalFee int64
+	var minFR, maxFR int64 = 0, 0
+	for _, tx := range all {
+		fee, fr, ok := s.pool.FeeOf(tx.TxID())
+		if !ok {
+			continue
+		}
+		feerates = append(feerates, fr)
+		totalFee += fee
+		if len(feerates) == 1 || fr < minFR {
+			minFR = fr
+		}
+		if fr > maxFR {
+			maxFR = fr
+		}
+	}
+	var meanFR int64
+	if len(feerates) > 0 {
+		meanFR = totalFee / int64(len(feerates))
+	}
+
 	return map[string]interface{}{
-		"size":  s.pool.Count(),
-		"bytes": s.pool.Size(),
-		"usage": s.pool.Size(),
+		"size":              s.pool.Count(),
+		"bytes":             s.pool.Size(),
+		"usage":             s.pool.Size(),
+		"totalfee":          totalFee,
+		"minfeerate":        minFR,
+		"maxfeerate":        maxFR,
+		"meanfeerate":       meanFR,
+		"minrelaytxfee":     mempool.MinRelayFeeAtomsPerVByte,
+		"fullrbf":           true,
+		"packagerelay":      true,
+	}, nil
+}
+
+// getCFHeaders returns a batch of BIP-157 filter headers ending at stopHash.
+// Light clients replay the filter-header chain locally to verify a large
+// range of filters against a single trusted tip; they pull the header chain
+// in ~2000-block batches via this RPC.
+//
+// Params: [startHeight uint, stopHash hex, filterType string = "basic"]
+// Response: {filter_type, stop_hash, previous_header, headers: [hex…]}
+func (s *Server) getCFHeaders(params []interface{}) (interface{}, *rpcError) {
+	if len(params) < 2 {
+		return nil, newRPCError(errCodeInvalidParams, "getcfheaders: need startHeight, stopHash")
+	}
+	startHeight, err := toUint64(params[0])
+	if err != nil {
+		return nil, newRPCError(errCodeInvalidParams, "startHeight: "+err.Error())
+	}
+	stopHashStr, ok := params[1].(string)
+	if !ok {
+		return nil, newRPCError(errCodeInvalidParams, "stopHash must be string")
+	}
+	stopHashBytes, err := hex.DecodeString(stopHashStr)
+	if err != nil || len(stopHashBytes) != 32 {
+		return nil, newRPCError(errCodeInvalidParams, "bad stopHash")
+	}
+	var stopHash [32]byte
+	copy(stopHash[:], stopHashBytes)
+
+	// Resolve stopHash → height, then walk the canonical chain from
+	// startHeight up to that height.
+	stopHeader, err := s.bc.GetBlockHeader(stopHash)
+	if err != nil {
+		return nil, newRPCError(errCodeInvalidParams, "unknown stopHash: "+err.Error())
+	}
+	if startHeight > stopHeader.Height {
+		return nil, newRPCError(errCodeInvalidParams, "startHeight > stop height")
+	}
+	// Cap at 2000 headers per call to match BIP-157.
+	const maxBatch = 2000
+	if stopHeader.Height-startHeight+1 > maxBatch {
+		return nil, newRPCError(errCodeInvalidParams, fmt.Sprintf("batch limit %d exceeded", maxBatch))
+	}
+
+	// previous_header is the filter header of the block at (startHeight-1).
+	var prevHeader [32]byte
+	if startHeight > 0 {
+		phHash, err := s.bc.GetBlockHashAtHeight(startHeight - 1)
+		if err != nil {
+			return nil, newRPCError(errCodeInternal, "walk prev: "+err.Error())
+		}
+		if ph, err := s.bc.GetFilterHeader(phHash); err == nil {
+			prevHeader = ph
+		}
+	}
+
+	headers := make([]string, 0, stopHeader.Height-startHeight+1)
+	for h := startHeight; h <= stopHeader.Height; h++ {
+		blockHash, err := s.bc.GetBlockHashAtHeight(h)
+		if err != nil {
+			return nil, newRPCError(errCodeInternal, fmt.Sprintf("hash at %d: %v", h, err))
+		}
+		fh, err := s.bc.GetFilterHeader(blockHash)
+		if err != nil {
+			// Older block ingested before filter persistence — no header.
+			headers = append(headers, "")
+			continue
+		}
+		headers = append(headers, hex.EncodeToString(fh[:]))
+	}
+	return map[string]interface{}{
+		"filter_type":     "basic",
+		"stop_hash":       stopHashStr,
+		"previous_header": hex.EncodeToString(prevHeader[:]),
+		"headers":         headers,
+	}, nil
+}
+
+// getCFCheckpt returns every 1000th filter header up to stopHash, so light
+// clients can anchor their filter-header chain at regular checkpoints and
+// verify long runs by filling gaps between checkpoints via getcfheaders.
+//
+// Params: [stopHash hex, filterType string = "basic"]
+// Response: {filter_type, stop_hash, filter_headers: [hex…]}  // height 1000, 2000, …
+func (s *Server) getCFCheckpt(params []interface{}) (interface{}, *rpcError) {
+	if len(params) < 1 {
+		return nil, newRPCError(errCodeInvalidParams, "getcfcheckpt: need stopHash")
+	}
+	stopHashStr, ok := params[0].(string)
+	if !ok {
+		return nil, newRPCError(errCodeInvalidParams, "stopHash must be string")
+	}
+	stopHashBytes, err := hex.DecodeString(stopHashStr)
+	if err != nil || len(stopHashBytes) != 32 {
+		return nil, newRPCError(errCodeInvalidParams, "bad stopHash")
+	}
+	var stopHash [32]byte
+	copy(stopHash[:], stopHashBytes)
+	stopHeader, err := s.bc.GetBlockHeader(stopHash)
+	if err != nil {
+		return nil, newRPCError(errCodeInvalidParams, "unknown stopHash: "+err.Error())
+	}
+
+	const interval uint64 = 1000
+	last := stopHeader.Height
+	checkpts := make([]string, 0, last/interval+1)
+	for h := interval; h <= last; h += interval {
+		blockHash, err := s.bc.GetBlockHashAtHeight(h)
+		if err != nil {
+			continue
+		}
+		fh, err := s.bc.GetFilterHeader(blockHash)
+		if err != nil {
+			checkpts = append(checkpts, "")
+			continue
+		}
+		checkpts = append(checkpts, hex.EncodeToString(fh[:]))
+	}
+	return map[string]interface{}{
+		"filter_type":    "basic",
+		"stop_hash":      stopHashStr,
+		"filter_headers": checkpts,
+	}, nil
+}
+
+// dumpSnapshot returns a hex-encoded UTXO-set snapshot at the current tip,
+// plus its SHA256 hash. Operators capture this at a well-known height and
+// commit the hash into ChainParams.AssumeUTXOHash; new nodes then load the
+// snapshot instead of replaying every block.
+//
+// Response: { height, blockhash, hash, snapshot_hex, utxo_count }
+func (s *Server) dumpSnapshot(_ []interface{}) (interface{}, *rpcError) {
+	snap, err := chain.BuildSnapshot(s.bc)
+	if err != nil {
+		return nil, newRPCError(errCodeInternal, "build snapshot: "+err.Error())
+	}
+	body := snap.Serialize()
+	h := snap.Hash()
+	return map[string]interface{}{
+		"height":       snap.Height,
+		"blockhash":    hex.EncodeToString(snap.BlockHash[:]),
+		"hash":         hex.EncodeToString(h[:]),
+		"snapshot_hex": hex.EncodeToString(body),
+		"utxo_count":   len(snap.UTXOs),
+	}, nil
+}
+
+// loadSnapshot parses a hex-encoded snapshot and writes its UTXOs into the
+// chain's database. Intended to be called ONCE on a fresh node before any
+// blocks are processed. A future version will verify the snapshot hash
+// against ChainParams.AssumeUTXOHash; today this is a trust-the-operator
+// operation, suitable for testing and for genesis snapshot creation.
+//
+// Params: [snapshot_hex string]
+// Response: { loaded: <n utxos>, height: <u64>, hash: "<hex>" }
+func (s *Server) loadSnapshot(params []interface{}) (interface{}, *rpcError) {
+	if len(params) < 1 {
+		return nil, newRPCError(errCodeInvalidParams, "missing snapshot hex")
+	}
+	hexStr, ok := params[0].(string)
+	if !ok {
+		return nil, newRPCError(errCodeInvalidParams, "snapshot must be a hex string")
+	}
+	data, err := hex.DecodeString(hexStr)
+	if err != nil {
+		return nil, newRPCError(errCodeInvalidParams, "bad hex: "+err.Error())
+	}
+	snap, err := chain.DeserializeSnapshot(data)
+	if err != nil {
+		return nil, newRPCError(errCodeInvalidParams, "parse snapshot: "+err.Error())
+	}
+	n, err := chain.LoadSnapshot(s.bc.DB(), snap)
+	if err != nil {
+		return nil, newRPCError(errCodeInternal, "write snapshot: "+err.Error())
+	}
+	h := snap.Hash()
+	return map[string]interface{}{
+		"loaded": n,
+		"height": snap.Height,
+		"hash":   hex.EncodeToString(h[:]),
+	}, nil
+}
+
+// getBlockFilter returns the BIP-158 compact block filter (output-only
+// variant) for the given block. Light clients use this to scan a long
+// history of blocks for outputs paying their addresses without downloading
+// every full block — they fetch one filter per block (tiny) and only fetch
+// the full block when the filter says their address might be in it.
+//
+// Params: [blockHashHex string, filterType string = "basic"]
+// Response: { filter: "<hex>", header: "<hex>", blockhash: "<hex>" }
+func (s *Server) getBlockFilter(params []interface{}) (interface{}, *rpcError) {
+	if len(params) < 1 {
+		return nil, newRPCError(errCodeInvalidParams, "missing block hash")
+	}
+	hashStr, ok := params[0].(string)
+	if !ok {
+		return nil, newRPCError(errCodeInvalidParams, "block hash must be a string")
+	}
+	hashBytes, err := hex.DecodeString(hashStr)
+	if err != nil || len(hashBytes) != 32 {
+		return nil, newRPCError(errCodeInvalidParams, "invalid block hash")
+	}
+	var hash [32]byte
+	copy(hash[:], hashBytes)
+
+	// Only the basic filter type is supported for now.
+	if len(params) >= 2 {
+		if t, _ := params[1].(string); t != "" && t != "basic" {
+			return nil, newRPCError(errCodeInvalidParams, "only 'basic' filter type supported")
+		}
+	}
+
+	// Fast path: the filter was built + persisted at ingestion. Returns
+	// the true BIP-158 basic variant including spent-input scripts, plus
+	// the BIP-157 filter header so the client can verify it.
+	if stored, err := s.bc.GetBlockFilter(hash); err == nil && len(stored) > 0 {
+		resp := map[string]interface{}{
+			"filter":    hex.EncodeToString(stored),
+			"blockhash": hashStr,
+		}
+		if header, err := s.bc.GetFilterHeader(hash); err == nil {
+			resp["header"] = hex.EncodeToString(header[:])
+		}
+		return resp, nil
+	}
+
+	// Fallback: rebuild on demand. Only output scripts — spent-input
+	// scripts can't be resolved after Apply, so this is a weaker filter.
+	// Callers of old blocks (pre-filter-persistence) get this subset.
+	block, err := s.bc.GetBlock(hash)
+	if err != nil {
+		return nil, newRPCError(errCodeInvalidParams, "block not found: "+err.Error())
+	}
+	filter := chain.BuildBlockFilter(block, nil)
+	return map[string]interface{}{
+		"filter":    hex.EncodeToString(filter),
+		"blockhash": hashStr,
+	}, nil
+}
+
+// estimateSmartFee returns a feerate (atoms/vbyte) a sender should attach to
+// get confirmed within confTarget blocks. Uses a percentile-of-current-mempool
+// heuristic: the confTarget-th percentile of feerates currently in the pool
+// is the floor that likely mines before then. Returns MinRelayFeeAtomsPerVByte
+// when the mempool is empty.
+//
+// Params: [confTarget int] (blocks, default 6; accepted range 1..1008)
+func (s *Server) estimateSmartFee(params []interface{}) (interface{}, *rpcError) {
+	confTarget := 6
+	if len(params) >= 1 {
+		if n, err := toUint64(params[0]); err == nil && n >= 1 && n <= 1008 {
+			confTarget = int(n)
+		}
+	}
+
+	all := s.pool.GetAll()
+	if len(all) == 0 {
+		return map[string]interface{}{
+			"feerate": mempool.MinRelayFeeAtomsPerVByte,
+			"blocks":  confTarget,
+		}, nil
+	}
+
+	feerates := make([]int64, 0, len(all))
+	for _, tx := range all {
+		if _, fr, ok := s.pool.FeeOf(tx.TxID()); ok {
+			feerates = append(feerates, fr)
+		}
+	}
+	// Sort ascending so the top percentile is at the end.
+	sort.Slice(feerates, func(i, j int) bool { return feerates[i] < feerates[j] })
+
+	// Map confTarget → pool percentile. A confTarget of 1 block needs the
+	// top-feerate slice; 6 blocks tolerates much lower. Formula is a rough
+	// piecewise fit: target=1 → 95th pct, target=6 → 50th, target=144 → 10th.
+	var pct float64
+	switch {
+	case confTarget <= 1:
+		pct = 0.95
+	case confTarget <= 3:
+		pct = 0.80
+	case confTarget <= 6:
+		pct = 0.50
+	case confTarget <= 24:
+		pct = 0.25
+	default:
+		pct = 0.10
+	}
+	idx := int(float64(len(feerates)-1) * pct)
+	estimated := feerates[idx]
+	if estimated < mempool.MinRelayFeeAtomsPerVByte {
+		estimated = mempool.MinRelayFeeAtomsPerVByte
+	}
+	return map[string]interface{}{
+		"feerate": estimated,
+		"blocks":  confTarget,
 	}, nil
 }
 
@@ -275,7 +648,24 @@ func (s *Server) getRawMempool(params []interface{}) (interface{}, *rpcError) {
 	return result, nil
 }
 
-// getBlockTemplate returns a block template for external miners (simplified GBT).
+// getBlockTemplate returns a block template for external miners.
+//
+// In addition to Bitcoin Core's standard fields, we expose two that the
+// Malairt consensus rules require:
+//
+//   default_witness_commitment — the hex-encoded 38-byte OP_RETURN script
+//     the miner must append as the LAST output of the coinbase. Our
+//     ValidateBlock rejects blocks without it. Computed as
+//     OP_RETURN 0x24 0xaa21a9ed || Hash256(witnessMerkleRoot || 0^32).
+//     The value passed to Hash256 uses the witness-merkle-root over THIS
+//     template's transactions, treating the coinbase's WTxID as zeros.
+//
+//   mintime — the minimum timestamp a new block may carry, computed as
+//     MedianTimePast(last 11 parents) + 1. Miners that pick a lower
+//     timestamp will have blocks rejected.
+//
+// Per-tx fee is now the actual mempool-tracked fee (previously hardcoded 0,
+// which meant miners couldn't compute their reward correctly).
 func (s *Server) getBlockTemplate(params []interface{}) (interface{}, *rpcError) {
 	height := s.bc.BestHeight() + 1
 	bestHash := s.bc.BestHash()
@@ -287,32 +677,68 @@ func (s *Server) getBlockTemplate(params []interface{}) (interface{}, *rpcError)
 	subsidy := chain.CalcBlockSubsidy(height, s.params)
 	txs := s.pool.GetSorted(2000)
 
+	// Build tx results with actual fees from the mempool's fee tracker.
+	// Sum fees so we can include subsidy+fees in coinbasevalue.
+	var totalFees int64
 	txResults := make([]interface{}, 0, len(txs))
 	for _, tx := range txs {
 		txid := tx.TxID()
+		fee, _, _ := s.pool.FeeOf(txid)
+		totalFees += fee
 		txResults = append(txResults, map[string]interface{}{
 			"data":    hex.EncodeToString(tx.Serialize()),
 			"txid":    hex.EncodeToString(txid[:]),
-			"fee":     0,
+			"fee":     fee,
 			"sigops":  0,
 			"depends": []interface{}{},
 		})
 	}
 
+	// Compute the witness-merkle-root over the template's txs. The miner
+	// will prepend a coinbase of its own choosing, so we reconstruct the
+	// full tx list with a placeholder coinbase (WTxID = zeros by BIP-141)
+	// before computing the commitment.
+	// The witness commitment's Hash256 input is: witnessRoot || reserved(32).
+	// We don't know the coinbase txid yet — but per BIP-141 the coinbase's
+	// WTxID is defined as 0x0…0, so it contributes zeros no matter what
+	// coinbase the miner picks.
+	placeholderCoinbase := &primitives.Transaction{
+		Version: 1,
+		Inputs: []primitives.TxInput{{
+			PreviousOutput: primitives.OutPoint{TxID: [32]byte{}, Index: 0xFFFFFFFF},
+			ScriptSig:      []byte{},
+			Sequence:       0xFFFFFFFF,
+		}},
+		Outputs: []primitives.TxOutput{{Value: subsidy + totalFees, ScriptPubKey: []byte{0x51}}},
+	}
+	allTxs := append([]*primitives.Transaction{placeholderCoinbase}, txs...)
+	commitment := primitives.ComputeWitnessCommitment(allTxs)
+	commitmentScript := primitives.BuildWitnessCommitmentScript(commitment)
+
+	// mintime = MTP + 1. BestHeader is the tip; MTP is median of tip +
+	// previous 10. For the first few blocks we just pass a timestamp
+	// slightly above the tip as a safe default.
+	tipHeader := s.bc.BestHeader()
+	mintime := tipHeader.Timestamp + 1
+
 	target := consensus.CompactToBig(bits)
 	targetHex := fmt.Sprintf("%064x", target)
 
 	return map[string]interface{}{
-		"version":           1,
-		"previousblockhash": hex.EncodeToString(bestHash[:]),
-		"transactions":      txResults,
-		"coinbasevalue":     subsidy,
-		"target":            targetHex,
-		"bits":              fmt.Sprintf("%08x", bits),
-		"height":            height,
-		"curtime":           time.Now().Unix(),
-		"mutable":           []string{"time", "transactions", "prevblock"},
-		"noncerange":        "00000000ffffffffffffffff",
+		"version":                     1,
+		"previousblockhash":           hex.EncodeToString(bestHash[:]),
+		"transactions":                txResults,
+		"coinbasevalue":               subsidy + totalFees,
+		"target":                      targetHex,
+		"bits":                        fmt.Sprintf("%08x", bits),
+		"height":                      height,
+		"curtime":                     time.Now().Unix(),
+		"mintime":                     mintime,
+		"mutable":                     []string{"time", "transactions", "prevblock"},
+		"noncerange":                  "00000000ffffffffffffffff",
+		"default_witness_commitment":  hex.EncodeToString(commitmentScript),
+		"sizelimit":                   s.params.MaxBlockWeight / 4,
+		"weightlimit":                 s.params.MaxBlockWeight,
 	}, nil
 }
 

@@ -142,6 +142,108 @@ func TestNewCoinbaseTx(t *testing.T) {
 	}
 }
 
+func TestTransactionWeight_EmptyWitness(t *testing.T) {
+	// A tx with no witness data still pays the segwit marker+flag+one-varint-per-input
+	// overhead in Serialize(). BaseSize is the legacy length (no marker, no witness).
+	tx := &Transaction{
+		Version: 1,
+		Inputs: []TxInput{{
+			PreviousOutput: OutPoint{TxID: [32]byte{1}, Index: 0},
+			ScriptSig:      []byte{0x51},
+			Sequence:       0xFFFFFFFF,
+		}},
+		Outputs:  []TxOutput{{Value: 100, ScriptPubKey: []byte{0x51}}},
+		LockTime: 0,
+	}
+	base := tx.BaseSize()
+	total := tx.TotalSize()
+	if total <= base {
+		t.Errorf("TotalSize %d must exceed BaseSize %d (marker+flag+witness counts)", total, base)
+	}
+	if diff := total - base; diff != 3 {
+		// 1 marker + 1 flag + 1 zero-item varint per input = 3 bytes for 1 input.
+		t.Errorf("segwit overhead: got %d bytes, want 3", diff)
+	}
+	if got, want := tx.Weight(), base*WitnessScaleFactor+(total-base); got != want {
+		t.Errorf("Weight: got %d, want %d", got, want)
+	}
+}
+
+func TestTransactionWeight_NonEmptyWitness(t *testing.T) {
+	tx := &Transaction{
+		Version: 1,
+		Inputs: []TxInput{{
+			PreviousOutput: OutPoint{TxID: [32]byte{1}, Index: 0},
+			ScriptSig:      nil,
+			Sequence:       0xFFFFFFFF,
+			Witness:        [][]byte{{0xAA, 0xBB, 0xCC}, {0xDD}}, // two items
+		}},
+		Outputs:  []TxOutput{{Value: 100, ScriptPubKey: []byte{0x51}}},
+		LockTime: 0,
+	}
+	base := tx.BaseSize()
+	total := tx.TotalSize()
+	// Witness items contribute 1 WU/byte while base bytes contribute 4 WU/byte.
+	want := base*WitnessScaleFactor + (total - base)
+	if got := tx.Weight(); got != want {
+		t.Errorf("Weight: got %d, want %d (base=%d total=%d)", got, want, base, total)
+	}
+	// Round-trip through Deserialize preserves the witness stack.
+	decoded, _, err := DeserializeTx(tx.Serialize())
+	if err != nil {
+		t.Fatalf("DeserializeTx: %v", err)
+	}
+	if len(decoded.Inputs[0].Witness) != 2 ||
+		string(decoded.Inputs[0].Witness[0]) != string(tx.Inputs[0].Witness[0]) ||
+		string(decoded.Inputs[0].Witness[1]) != string(tx.Inputs[0].Witness[1]) {
+		t.Errorf("witness round-trip mismatch: %x", decoded.Inputs[0].Witness)
+	}
+	// TxID must ignore the witness stack — that's the malleability fix.
+	tx2 := *tx
+	tx2.Inputs = []TxInput{tx.Inputs[0]}
+	tx2.Inputs[0].Witness = [][]byte{{0xFF}} // different witness
+	if tx2.TxID() != tx.TxID() {
+		t.Error("TxID must not depend on witness data")
+	}
+	if tx2.WTxID() == tx.WTxID() {
+		t.Error("WTxID must change when witness data changes")
+	}
+}
+
+func TestBlockWeight(t *testing.T) {
+	// Two txs: one without witness data, one with.
+	txA := &Transaction{
+		Version:  1,
+		Inputs:   []TxInput{{PreviousOutput: OutPoint{Index: 0xFFFFFFFF}, ScriptSig: []byte("c"), Sequence: 0xFFFFFFFF}},
+		Outputs:  []TxOutput{{Value: 1, ScriptPubKey: []byte{0x51}}},
+		LockTime: 0,
+	}
+	txB := &Transaction{
+		Version: 1,
+		Inputs: []TxInput{{
+			PreviousOutput: OutPoint{TxID: [32]byte{1}, Index: 0},
+			Sequence:       0xFFFFFFFF,
+			Witness:        [][]byte{{0x11, 0x22, 0x33, 0x44}},
+		}},
+		Outputs:  []TxOutput{{Value: 2, ScriptPubKey: []byte{0x52}}},
+		LockTime: 0,
+	}
+	block := &Block{
+		Header: BlockHeader{Version: 1},
+		Txs:    []*Transaction{txA, txB},
+	}
+
+	base := block.BaseSize()
+	total := block.TotalSize()
+	if base >= total {
+		t.Errorf("expected BaseSize (%d) < TotalSize (%d) when witness data present", base, total)
+	}
+	want := base*WitnessScaleFactor + (total - base)
+	if got := block.Weight(); got != want {
+		t.Errorf("Block.Weight: got %d, want %d (base=%d total=%d)", got, want, base, total)
+	}
+}
+
 func TestBlockHashDifferentNonces(t *testing.T) {
 	h1 := &BlockHeader{
 		Version: 1, Bits: 0x207fffff, Timestamp: 1_704_067_200, Nonce: 0,

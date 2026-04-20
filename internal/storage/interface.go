@@ -51,4 +51,7 @@ const (
 	PrefixBlockUndo = "bu/"
 	PrefixTxIndex   = "tx/"
 	PrefixAddrIndex = "ai/"
+	PrefixCFilter   = "cf/" // BIP-158 compact block filter keyed by block hash
+	PrefixCFHeader  = "ch/" // BIP-157 filter-header commitment keyed by block hash
+	PrefixChainWork = "cw/" // cumulative chainwork (big-endian big.Int bytes) keyed by block hash
 )

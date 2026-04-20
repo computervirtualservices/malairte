@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -106,6 +107,15 @@ func main() {
 
 	// 9. Create RPC server (miner is set later if mining is enabled)
 	rpcSrv := rpc.NewServer(bc, pool, nil, peerSrv, params)
+	if cfg.RPCUser != "" && cfg.RPCPass != "" {
+		rpcSrv.SetAuth(cfg.RPCUser, cfg.RPCPass)
+		log.Printf("[rpc] HTTP Basic Auth enabled")
+	} else if cfg.RPCAddr != "" {
+		host, _, _ := net.SplitHostPort(cfg.RPCAddr)
+		if host != "127.0.0.1" && host != "::1" && host != "localhost" {
+			log.Printf("[rpc] WARNING: non-localhost RPC with no auth — set --rpc-user and --rpc-pass")
+		}
+	}
 
 	// 10. Start RPC server
 	if err := rpcSrv.Start(cfg.RPCAddr); err != nil {

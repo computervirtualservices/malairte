@@ -56,11 +56,20 @@ func NewBlockTemplate(bc *chain.Blockchain, pool *mempool.TxPool, coinbaseScript
 
 	// Select transactions from the mempool and compute their fees via UTXO lookups.
 	// Transactions whose inputs reference unconfirmed (not-yet-in-UTXO-set) outputs
-	// are skipped rather than included with an unknown fee.
+	// are skipped rather than included with an unknown fee. Selection also stops
+	// once adding the next candidate would push the block past MaxBlockWeight;
+	// mempool.GetSorted returns transactions highest-fee-first, so truncating
+	// preserves miner revenue.
 	mempoolTxs := pool.GetSorted(maxBlockTxs)
 	utxoSet := bc.UTXOSet()
+	maxWeight := params.MaxBlockWeight
+	// Reserve ~4 KWU for the coinbase (in practice it's ~500 bytes * 4 = 2000 WU,
+	// but reserving 4 KWU leaves generous headroom for admin-fee outputs).
+	const coinbaseWeightReserve = 4_000
+	weightBudget := maxWeight - coinbaseWeightReserve
 
 	var totalFees int64
+	var usedWeight int
 	includedTxs := make([]*primitives.Transaction, 0, len(mempoolTxs))
 	for _, tx := range mempoolTxs {
 		fee, err := calcTxFee(tx, utxoSet)
@@ -71,6 +80,13 @@ func NewBlockTemplate(bc *chain.Blockchain, pool *mempool.TxPool, coinbaseScript
 		if fee < 0 {
 			// Skip: malformed tx that creates more value than it consumes
 			continue
+		}
+		if maxWeight > 0 {
+			txW := tx.Weight()
+			if usedWeight+txW > weightBudget {
+				continue // try smaller txs lower in the list
+			}
+			usedWeight += txW
 		}
 		totalFees += fee
 		includedTxs = append(includedTxs, tx)
@@ -97,6 +113,16 @@ func NewBlockTemplate(bc *chain.Blockchain, pool *mempool.TxPool, coinbaseScript
 	allTxs := make([]*primitives.Transaction, 0, 1+len(includedTxs))
 	allTxs = append(allTxs, coinbaseTx)
 	allTxs = append(allTxs, includedTxs...)
+
+	// Append BIP-141 witness commitment as a zero-value OP_RETURN output on the
+	// coinbase. Required by consensus on every block. ComputeWitnessCommitment
+	// treats the coinbase's WTxID as zeros so this output can safely reference
+	// the transaction list it is part of.
+	commitment := primitives.ComputeWitnessCommitment(allTxs)
+	coinbaseTx.Outputs = append(coinbaseTx.Outputs, primitives.TxOutput{
+		Value:        0,
+		ScriptPubKey: primitives.BuildWitnessCommitmentScript(commitment),
+	})
 
 	// Compute merkle root
 	merkleRoot := primitives.CalcMerkleRoot(allTxs)

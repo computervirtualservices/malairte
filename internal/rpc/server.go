@@ -2,6 +2,7 @@
 package rpc
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -53,6 +54,24 @@ type Server struct {
 	params  *chain.ChainParams
 	httpSrv *http.Server
 	stopCh  chan struct{}
+
+	// authUser / authPass enable HTTP Basic Auth on every request when both
+	// are non-empty. Empty strings = no auth (backward-compatible default).
+	// Set via SetAuth BEFORE Start; not safe to change at runtime.
+	authUser string
+	authPass string
+}
+
+// SetAuth configures HTTP Basic Auth for the RPC server. When both user
+// and pass are non-empty, every incoming request must carry an
+// Authorization: Basic <base64(user:pass)> header matching these values or
+// the request is rejected with 401. Leaving either empty disables auth
+// entirely (explicit opt-in — existing deployments keep working).
+//
+// Callers should set this BEFORE Start() to avoid racing the first request.
+func (s *Server) SetAuth(user, pass string) {
+	s.authUser = user
+	s.authPass = pass
 }
 
 // NewServer creates the RPC server with all required dependencies.
@@ -116,6 +135,20 @@ func (s *Server) Stop() {
 
 // handleRequest reads and dispatches a single JSON-RPC request.
 func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
+	// Optional HTTP Basic Auth. Enforced only when SetAuth has been called
+	// with a non-empty user and pass.
+	if s.authUser != "" && s.authPass != "" {
+		user, pass, ok := r.BasicAuth()
+		// Constant-time compare prevents timing side-channels leaking the
+		// configured secret byte-by-byte.
+		if !ok ||
+			subtle.ConstantTimeCompare([]byte(user), []byte(s.authUser)) != 1 ||
+			subtle.ConstantTimeCompare([]byte(pass), []byte(s.authPass)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Basic realm="malairte-rpc"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -167,6 +200,18 @@ func (s *Server) dispatch(method string, params []interface{}) (interface{}, *rp
 		return s.getMempoolInfo(params)
 	case "getrawmempool":
 		return s.getRawMempool(params)
+	case "estimatesmartfee":
+		return s.estimateSmartFee(params)
+	case "getblockfilter":
+		return s.getBlockFilter(params)
+	case "getcfheaders":
+		return s.getCFHeaders(params)
+	case "getcfcheckpt":
+		return s.getCFCheckpt(params)
+	case "dumpsnapshot":
+		return s.dumpSnapshot(params)
+	case "loadsnapshot":
+		return s.loadSnapshot(params)
 	case "getblocktemplate":
 		return s.getBlockTemplate(params)
 	case "submitblock":

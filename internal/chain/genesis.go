@@ -12,16 +12,11 @@ const genesisMessage = "MLRT Genesis - The Malairt coin begins."
 // The genesis block:
 //   - Has height 0 and a zero PreviousHash
 //   - Contains a single coinbase transaction with the initial block reward
-//   - Sends the reward to a burn address (all-zeros pubkey hash)
+//   - Sends the reward to params.GenesisScript() (GenesisAddress, or burn hash if empty)
 //   - Uses nonce=0 with easy difficulty (0x207fffff) so it validates immediately
 func GenesisBlock(params *ChainParams) *primitives.Block {
-	// Burn address: P2PKH script locking to all-zeros pubkey hash
-	// This coins are permanently unspendable — genesis reward goes to nobody
-	burnHash := [20]byte{} // all zeros
-	burnScript := primitives.P2PKHScript(burnHash)
-
 	// Create coinbase transaction with the genesis message
-	coinbaseTx := createGenesisCoinbase(params.InitialReward, burnScript)
+	coinbaseTx := createGenesisCoinbase(params.InitialReward, params.GenesisScript())
 
 	// Compute merkle root from the single coinbase transaction
 	merkleRoot := primitives.CalcMerkleRoot([]*primitives.Transaction{coinbaseTx})

@@ -316,7 +316,7 @@ func TestNewBlockTemplate_IncludesConfirmedUTXOSpend(t *testing.T) {
 			ScriptPubKey: []byte{0x51},
 		}},
 	}
-	if err := pool.Add(spendTx); err != nil {
+	if err := pool.Add(spendTx, 1_000_000); err != nil {
 		t.Fatalf("pool.Add: %v", err)
 	}
 
@@ -355,7 +355,7 @@ func TestNewBlockTemplate_SkipsChaineUnconfirmed(t *testing.T) {
 		}},
 		Outputs: []primitives.TxOutput{{Value: 1_000_000, ScriptPubKey: []byte{0x51}}},
 	}
-	if err := pool.Add(chainedTx); err != nil {
+	if err := pool.Add(chainedTx, 100); err != nil {
 		t.Fatalf("pool.Add: %v", err)
 	}
 

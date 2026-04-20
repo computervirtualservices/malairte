@@ -3,6 +3,8 @@ package consensus
 import (
 	"math/big"
 	"testing"
+
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 func TestCompactToBig(t *testing.T) {
@@ -152,5 +154,144 @@ func TestCalcNextRequiredDifficulty_MaxTarget(t *testing.T) {
 
 	if newTarget.Cmp(maxTarget) > 0 {
 		t.Errorf("Target %s exceeds max target %s", newTarget.Text(16), maxTarget.Text(16))
+	}
+}
+
+// buildLWMAWindow builds LWMAWindow+1 consecutive headers spaced by solvetime
+// seconds with constant bits, starting at startTime.
+func buildLWMAWindow(startTime, solvetime int64, bits uint32) []*primitives.BlockHeader {
+	hdrs := make([]*primitives.BlockHeader, LWMAWindow+1)
+	for i := range hdrs {
+		hdrs[i] = &primitives.BlockHeader{
+			Height:    uint64(i),
+			Timestamp: startTime + int64(i)*solvetime,
+			Bits:      bits,
+		}
+	}
+	return hdrs
+}
+
+func TestNextRequiredBitsLWMA_StableAtTarget(t *testing.T) {
+	const T = int64(120)
+	bits := uint32(0x1d00ffff)
+	hdrs := buildLWMAWindow(1_000_000, T, bits) // solvetime == target
+	got := NextRequiredBitsLWMA(hdrs, T, 0x1e0ffff0)
+
+	oldTarget := CompactToBig(bits)
+	newTarget := CompactToBig(got)
+
+	// Round-trip tolerance: allow up to 2 ULP in compact space.
+	diff := new(big.Int).Sub(newTarget, oldTarget)
+	diff.Abs(diff)
+	tol := new(big.Int).Rsh(oldTarget, 20) // ~1e-6 of old target
+	if diff.Cmp(tol) > 0 {
+		t.Errorf("stable-at-target should not move bits much: old=%x new=%x", bits, got)
+	}
+}
+
+func TestNextRequiredBitsLWMA_FastBlocksRaiseDifficulty(t *testing.T) {
+	const T = int64(120)
+	bits := uint32(0x1d00ffff)
+	hdrs := buildLWMAWindow(1_000_000, T/10, bits) // 10× too fast
+	got := NextRequiredBitsLWMA(hdrs, T, 0x1e0ffff0)
+
+	oldTarget := CompactToBig(bits)
+	newTarget := CompactToBig(got)
+	if newTarget.Cmp(oldTarget) >= 0 {
+		t.Errorf("fast blocks should lower target (raise difficulty): old=%s new=%s",
+			oldTarget.Text(16), newTarget.Text(16))
+	}
+}
+
+func TestNextRequiredBitsLWMA_SlowBlocksLowerDifficulty(t *testing.T) {
+	const T = int64(120)
+	bits := uint32(0x1b0404cb) // a "hard" target well below pow_limit
+	hdrs := buildLWMAWindow(1_000_000, T*4, bits) // 4× too slow
+	got := NextRequiredBitsLWMA(hdrs, T, 0x1e0ffff0)
+
+	oldTarget := CompactToBig(bits)
+	newTarget := CompactToBig(got)
+	if newTarget.Cmp(oldTarget) <= 0 {
+		t.Errorf("slow blocks should raise target (lower difficulty): old=%s new=%s",
+			oldTarget.Text(16), newTarget.Text(16))
+	}
+}
+
+func TestNextRequiredBitsLWMA_ClampsAtPowLimit(t *testing.T) {
+	const T = int64(120)
+	powLimit := uint32(0x1e0ffff0)
+	bits := uint32(0x1d00ffff)
+	// Extremely slow — would push target above pow_limit if unclamped.
+	hdrs := buildLWMAWindow(1_000_000, T*100, bits)
+	got := NextRequiredBitsLWMA(hdrs, T, powLimit)
+
+	newTarget := CompactToBig(got)
+	limitTarget := CompactToBig(powLimit)
+	if newTarget.Cmp(limitTarget) > 0 {
+		t.Errorf("target %s exceeds pow_limit %s", newTarget.Text(16), limitTarget.Text(16))
+	}
+}
+
+func TestNextRequiredBitsLWMA_ShortWindowReturnsPowLimit(t *testing.T) {
+	const T = int64(120)
+	powLimit := uint32(0x1e0ffff0)
+	hdrs := buildLWMAWindow(1_000_000, T, 0x1d00ffff)[:5] // too few
+	got := NextRequiredBitsLWMA(hdrs, T, powLimit)
+	if got != powLimit {
+		t.Errorf("short window should fall back to pow_limit: got %08x want %08x", got, powLimit)
+	}
+}
+
+func TestNextRequiredBitsLWMA_ResistsNegativeTimestampSpike(t *testing.T) {
+	const T = int64(120)
+	bits := uint32(0x1d00ffff)
+	hdrs := buildLWMAWindow(1_000_000, T, bits)
+	// Inject a pathological timestamp: block N jumps 1 hour backwards.
+	hdrs[LWMAWindow].Timestamp = hdrs[LWMAWindow-1].Timestamp - 3600
+
+	got := NextRequiredBitsLWMA(hdrs, T, 0x1e0ffff0)
+	// Should not produce an absurd result: target must remain within ~4× of original.
+	oldT := CompactToBig(bits)
+	newT := CompactToBig(got)
+	maxMove := new(big.Int).Mul(oldT, big.NewInt(4))
+	minMove := new(big.Int).Quo(oldT, big.NewInt(4))
+	if newT.Cmp(maxMove) > 0 || newT.Cmp(minMove) < 0 {
+		t.Errorf("negative-timestamp spike produced extreme target: old=%s new=%s",
+			oldT.Text(16), newT.Text(16))
+	}
+}
+
+func TestCalcMedianTimePast(t *testing.T) {
+	mk := func(ts ...int64) []*primitives.BlockHeader {
+		h := make([]*primitives.BlockHeader, len(ts))
+		for i, t := range ts {
+			h[i] = &primitives.BlockHeader{Timestamp: t}
+		}
+		return h
+	}
+	// Fewer than 11 headers: median of all.
+	if got := CalcMedianTimePast(mk(10, 20, 30)); got != 20 {
+		t.Errorf("median of 3: got %d want 20", got)
+	}
+	// 11 headers — median is the 6th element (index 5) after sort.
+	got := CalcMedianTimePast(mk(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11))
+	if got != 6 {
+		t.Errorf("median of 11 sorted: got %d want 6", got)
+	}
+	// More than 11 headers: only last 11 matter.
+	got = CalcMedianTimePast(mk(999, 999, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11))
+	if got != 6 {
+		t.Errorf("median of last 11: got %d want 6", got)
+	}
+	// Out-of-order timestamps (an attacker-controlled block) still produce
+	// the true median.
+	got = CalcMedianTimePast(mk(100, 50, 200, 25, 175, 10, 150, 5, 125, 1, 110))
+	// sorted: 1,5,10,25,50,100,110,125,150,175,200 → median = 100
+	if got != 100 {
+		t.Errorf("median of unsorted: got %d want 100", got)
+	}
+	// Empty.
+	if got := CalcMedianTimePast(nil); got != 0 {
+		t.Errorf("empty: got %d want 0", got)
 	}
 }

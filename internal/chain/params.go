@@ -27,10 +27,28 @@ type ChainParams struct {
 	InitialReward int64
 	// HalvingInterval is the number of blocks between each halving of the block reward.
 	HalvingInterval uint64
-	// RetargetInterval is the number of blocks between difficulty adjustments.
+	// RetargetInterval is the legacy Bitcoin-style retarget window. Retained for
+	// backwards compatibility with persisted chains; LWMA retargets every block
+	// and ignores this value once the chain is past LWMAWindow headers.
 	RetargetInterval uint64
 	// BlockTime is the target time between blocks in seconds.
 	BlockTime int64
+	// PowLimitBits is the easiest permitted compact target. All post-LWMA
+	// retargets clamp at this value; a block whose Bits exceed PowLimitBits
+	// (i.e. whose numeric target is larger) is rejected.
+	PowLimitBits uint32
+	// AllowMinDifficultyBlocks, when true, relaxes the difficulty target to
+	// PowLimitBits for any block whose timestamp is more than
+	// 2 * BlockTime seconds after its parent. This is the Bitcoin-testnet
+	// "never-stuck" rule: if a solo miner goes offline, anyone can resume
+	// mining at trivial difficulty rather than being locked into the prior
+	// high-hashrate LWMA target. Must stay false on mainnet.
+	AllowMinDifficultyBlocks bool
+	// MaxBlockWeight is the maximum permitted weight of a block in weight units
+	// (WU). Pre-SegWit this caps the serialized block at MaxBlockWeight/4 bytes;
+	// post-SegWit the witness discount lets a block carry up to MaxBlockWeight
+	// bytes of witness data. Bitcoin mainnet uses 4_000_000 WU.
+	MaxBlockWeight int
 	// AdminAddress is the protocol-fee recipient. Every block (except genesis)
 	// pays AdminFeeAtoms here as part of the coinbase, and every non-coinbase
 	// transaction must include an output of at least AdminFeeAtoms to this
@@ -38,8 +56,18 @@ type ChainParams struct {
 	AdminAddress string
 	// AdminFeeAtoms is the per-block and per-transaction protocol fee in atoms.
 	AdminFeeAtoms int64
+	// GenesisAddress is the recipient of the genesis block's coinbase reward.
+	// Empty string falls back to the all-zeros burn hash (Satoshi-style
+	// unspendable). Changing this value changes the genesis hash, so it must
+	// remain fixed once a chain has been bootstrapped.
+	GenesisAddress string
 	// AddressVersion is the Base58Check version byte (50=mainnet "M", 111=testnet "m").
 	AddressVersion byte
+	// Bech32HRP is the human-readable prefix for native SegWit addresses:
+	// "mlrt" on mainnet ("mlrt1q…" v0, "mlrt1p…" v1 taproot), "tmlrt" on
+	// testnet. The same HRP covers every witness version; the version byte
+	// selects between bech32 (v0) and bech32m (v1+).
+	Bech32HRP string
 	// Checkpoints maps block heights to expected block hashes.
 	Checkpoints map[uint64][32]byte
 	// SeedPeers is the list of default bootstrap peer addresses ("host:port").
@@ -59,9 +87,13 @@ var MainNetParams = ChainParams{
 	BlockTime:        120, // 2 minutes
 	AdminAddress:     "MRxSEiJJ4FgHrUMMEMfTMeT6EmMDARE1AD", // protocol fee recipient
 	AdminFeeAtoms:    10,                                  // 0.0000001 MLRT per coinbase + per tx
+	GenesisAddress:   "MRxSEiJJ4FgHrUMMEMfTMeT6EmMDARE1AD", // genesis reward pays treasury (was burn hash pre-rebootstrap)
 	AddressVersion:   50,                                  // Base58Check prefix "M"
-	GenesisBits:      0x207fffff,
-	GenesisTimestamp: 1_776_610_968, // 2026-04-19 15:02:48 UTC — mainnet re-bootstrap
+	Bech32HRP:        "mlrt",
+	GenesisBits:      0x1d00ffff,                          // difficulty-1 at launch; LWMA adapts from here
+	PowLimitBits:     0x1e0ffff0,                          // easiest permitted target (LWMA clamp)
+	MaxBlockWeight:   4_000_000,                           // 4 MWU — matches Bitcoin mainnet
+	GenesisTimestamp: 1_776_618_000, // 2026-04-19 17:00:00 UTC — mainnet re-bootstrap w/ genesis payout
 	Checkpoints:      map[uint64][32]byte{},
 	// SeedPeers will be populated once public bootstrap nodes are deployed.
 	SeedPeers: []string{},
@@ -79,8 +111,12 @@ var TestNetParams = ChainParams{
 	BlockTime:        120, // 2 minutes
 	AdminAddress:     "", // not enforced on testnet by default
 	AdminFeeAtoms:    0,
-	AddressVersion:   111, // Base58Check prefix "m"
-	GenesisBits:      0x207fffff,
+	AddressVersion:   111,     // Base58Check prefix "m"
+	Bech32HRP:        "tmlrt", // testnet native-SegWit HRP
+	GenesisBits:              0x207fffff, // trivial target on testnet for dev-speed mining
+	PowLimitBits:             0x207fffff,
+	AllowMinDifficultyBlocks: true,      // testnet "never-stuck" escape valve
+	MaxBlockWeight:           4_000_000, // same cap as mainnet
 	GenesisTimestamp: 1_745_452_800, // 2026-04-24 00:00:00 UTC
 	Checkpoints:      map[uint64][32]byte{},
 	// SeedPeers will be populated once public bootstrap nodes are deployed.
@@ -106,6 +142,22 @@ func (p *ChainParams) AdminScript() []byte {
 	_, payload, err := crypto.Base58CheckDecode(p.AdminAddress)
 	if err != nil || len(payload) != 20 {
 		return nil
+	}
+	var pkh [20]byte
+	copy(pkh[:], payload)
+	return primitives.P2PKHScript(pkh)
+}
+
+// GenesisScript returns the P2PKH locking script that receives the genesis
+// coinbase reward. When GenesisAddress is empty (or undecodable), the reward
+// goes to the all-zeros burn hash — Satoshi-style unspendable.
+func (p *ChainParams) GenesisScript() []byte {
+	if p.GenesisAddress == "" {
+		return primitives.P2PKHScript([20]byte{})
+	}
+	_, payload, err := crypto.Base58CheckDecode(p.GenesisAddress)
+	if err != nil || len(payload) != 20 {
+		return primitives.P2PKHScript([20]byte{})
 	}
 	var pkh [20]byte
 	copy(pkh[:], payload)

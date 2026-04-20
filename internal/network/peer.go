@@ -1,6 +1,8 @@
 package network
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -9,6 +11,11 @@ import (
 
 	"github.com/computervirtualservices/malairte/internal/chain"
 )
+
+// v2HandshakeTimeout bounds how long we wait for the BIP-324-derived
+// encryption handshake to complete. A peer that can't finish within this
+// window is almost certainly not running the current protocol.
+const v2HandshakeTimeout = 30 * time.Second
 
 // PeerMessage wraps a decoded message with its source peer.
 type PeerMessage struct {
@@ -30,6 +37,11 @@ type Peer struct {
 	quit        chan struct{}
 	quitOnce    sync.Once
 	params      *chain.ChainParams
+	// v2 is the encrypted transport session negotiated during EnableV2.
+	// When set, every inbound packet is decrypted before parsing and every
+	// outbound packet is sealed before writing. Must be established before
+	// Start() is called — the read/write loops assume it is immutable.
+	v2 *Session
 }
 
 // NewPeer wraps a net.Conn into a Peer.
@@ -43,6 +55,38 @@ func NewPeer(conn net.Conn, params *chain.ChainParams, inbound bool) *Peer {
 		quit:     make(chan struct{}),
 		params:   params,
 	}
+}
+
+// EnableV2 runs the BIP-324-derived handshake over this peer's connection
+// and, on success, routes every subsequent read and write through the
+// resulting encrypted session. initiating=true for outbound dials,
+// initiating=false for accepted inbound connections.
+//
+// Must be called BEFORE Start(); once the read/write goroutines are running,
+// the conn is no longer safe for foreground handshaking.
+func (p *Peer) EnableV2(initiating bool) error {
+	if p.v2 != nil {
+		return errors.New("v2 already enabled")
+	}
+	// Bound the handshake with a deadline so a silent peer cannot tie up
+	// the dial goroutine forever.
+	p.conn.SetDeadline(time.Now().Add(v2HandshakeTimeout))
+	defer p.conn.SetDeadline(time.Time{})
+
+	var (
+		sess *Session
+		err  error
+	)
+	if initiating {
+		sess, err = InitiateV2(p.conn)
+	} else {
+		sess, err = AcceptV2(p.conn)
+	}
+	if err != nil {
+		return fmt.Errorf("v2 handshake: %w", err)
+	}
+	p.v2 = sess
+	return nil
 }
 
 // Start launches the send and receive goroutines for this peer.
@@ -135,7 +179,22 @@ func (p *Peer) readLoop(msgCh chan<- PeerMessage) {
 		// Set a read deadline to detect dead connections
 		p.conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 
-		msg, err := DecodeMessage(p.conn, magic)
+		var msg *NetMessage
+		var err error
+		if p.v2 != nil {
+			// Read one encrypted packet; its plaintext is a v1 framed message.
+			// Carrying the v1 frame inside the v2 packet is a small (~24 byte)
+			// overhead vs. designing a second inner wire format, and keeps
+			// DecodeMessage reusable.
+			plaintext, perr := p.v2.ReadPacket(p.conn)
+			if perr != nil {
+				err = perr
+			} else {
+				msg, err = DecodeMessage(bytes.NewReader(plaintext), magic)
+			}
+		} else {
+			msg, err = DecodeMessage(p.conn, magic)
+		}
 		if err != nil {
 			select {
 			case <-p.quit:
@@ -163,7 +222,13 @@ func (p *Peer) writeLoop() {
 		case msg := <-p.outbound:
 			p.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 			data := EncodeMessage(magic, msg.Command, msg.Payload)
-			if _, err := p.conn.Write(data); err != nil {
+			var err error
+			if p.v2 != nil {
+				err = p.v2.WritePacket(p.conn, data)
+			} else {
+				_, err = p.conn.Write(data)
+			}
+			if err != nil {
 				select {
 				case <-p.quit:
 				default:

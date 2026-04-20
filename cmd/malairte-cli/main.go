@@ -17,10 +17,28 @@ import (
 
 const defaultRPCURL = "http://127.0.0.1:9332"
 
+// rpcAuth holds optional HTTP Basic Auth credentials. When both fields are
+// non-empty the CLI attaches an Authorization header to every RPC call.
+// Populated from --rpc-user / --rpc-pass flags OR the MALAIRTE_RPC_USER /
+// MALAIRTE_RPC_PASS env vars, so operators can avoid putting the password
+// in shell history.
+type rpcAuth struct {
+	user string
+	pass string
+}
+
+var currentAuth rpcAuth
+
 func main() {
 	rpcURL := flag.String("rpc", defaultRPCURL, "RPC server URL")
+	rpcUser := flag.String("rpc-user", os.Getenv("MALAIRTE_RPC_USER"),
+		"RPC Basic Auth user (or set MALAIRTE_RPC_USER)")
+	rpcPass := flag.String("rpc-pass", os.Getenv("MALAIRTE_RPC_PASS"),
+		"RPC Basic Auth password (or set MALAIRTE_RPC_PASS)")
 	flag.Usage = usage
 	flag.Parse()
+
+	currentAuth = rpcAuth{user: *rpcUser, pass: *rpcPass}
 
 	args := flag.Args()
 	if len(args) == 0 {
@@ -238,33 +256,47 @@ type rpcResponse struct {
 }
 
 // callRPC makes a JSON-RPC 1.0 POST request and returns the response map.
+// Attaches HTTP Basic Auth when the global currentAuth is populated. Gives
+// an actionable 401 message (rather than a JSON decode error) when the
+// server demands auth the user didn't supply.
 func callRPC(rpcURL, method string, params []interface{}) (map[string]interface{}, error) {
 	if params == nil {
 		params = []interface{}{}
 	}
-
 	reqBody := map[string]interface{}{
 		"id":      1,
 		"method":  method,
 		"params":  params,
 		"jsonrpc": "1.0",
 	}
-
 	data, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	resp, err := http.Post(rpcURL, "application/json", bytes.NewReader(data))
+	req, err := http.NewRequest(http.MethodPost, rpcURL, bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("new request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if currentAuth.user != "" && currentAuth.pass != "" {
+		req.SetBasicAuth(currentAuth.user, currentAuth.pass)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP POST to %s: %w", rpcURL, err)
 	}
 	defer resp.Body.Close()
 
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf(
+			"RPC server requires authentication (HTTP 401). " +
+				"Pass --rpc-user and --rpc-pass, or set MALAIRTE_RPC_USER / MALAIRTE_RPC_PASS env vars.")
 	}
 
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode response (status %d): %w", resp.StatusCode, err)
+	}
 	return result, nil
 }

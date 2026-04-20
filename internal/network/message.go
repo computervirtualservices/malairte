@@ -22,8 +22,9 @@ const (
 	CmdGetData   = "getdata"
 	CmdBlock     = "block"
 	CmdTx        = "tx"
-	CmdGetBlocks = "getblocks"
-	CmdHeaders   = "headers"
+	CmdGetBlocks  = "getblocks"
+	CmdHeaders    = "headers"
+	CmdGetHeaders = "getheaders"
 )
 
 // Inventory object types.
@@ -400,6 +401,31 @@ func DecodeGetBlocksMsg(data []byte) (*GetBlocksMsg, error) {
 	var stopHash [32]byte
 	copy(stopHash[:], data[pos:pos+32])
 	return &GetBlocksMsg{BlockLocator: locator, StopHash: stopHash}, nil
+}
+
+// GetHeadersMsg is the header-first sync request. Identical on-wire shape
+// to GetBlocksMsg (locator of known hashes + stopHash), but the peer
+// responds with a HeadersMsg of up to 2000 headers rather than an INV of
+// block hashes. Syncing clients use this to download the canonical chain
+// tip O(96 bytes per block) before fetching full block bodies.
+type GetHeadersMsg struct {
+	BlockLocator [][32]byte
+	StopHash     [32]byte
+}
+
+// Encode / DecodeGetHeadersMsg reuse GetBlocksMsg's wire format exactly —
+// same fields, same order — so older Bitcoin-Core-compatible tools work.
+func (m *GetHeadersMsg) Encode() []byte {
+	return (&GetBlocksMsg{BlockLocator: m.BlockLocator, StopHash: m.StopHash}).Encode()
+}
+
+// DecodeGetHeadersMsg decodes the wire format back into a GetHeadersMsg.
+func DecodeGetHeadersMsg(data []byte) (*GetHeadersMsg, error) {
+	m, err := DecodeGetBlocksMsg(data)
+	if err != nil {
+		return nil, err
+	}
+	return &GetHeadersMsg{BlockLocator: m.BlockLocator, StopHash: m.StopHash}, nil
 }
 
 // HeadersMsg carries a list of block headers (without transactions).

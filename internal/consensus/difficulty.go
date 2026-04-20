@@ -3,6 +3,8 @@ package consensus
 
 import (
 	"math/big"
+
+	"github.com/computervirtualservices/malairte/internal/primitives"
 )
 
 // InitialBits is the genesis block difficulty target in compact format.
@@ -16,6 +18,16 @@ const maxBits uint32 = 0x207fffff
 // minBits is the minimum allowed compact target (highest difficulty).
 // Prevents the difficulty from becoming impossibly hard.
 const minBits uint32 = 0x03000000
+
+// LWMA window and clamp constants per Malairt Consensus Spec v1 §3.
+// Window N is the number of previous blocks considered by the LWMA retarget.
+// Solvetime clamp bounds prevent a single bad timestamp (or time-warp attack)
+// from dominating the weighted mean.
+const (
+	LWMAWindow            = 60
+	LWMASolvetimeLowMult  = -5 // min solvetime = -5 * T (T = target block time)
+	LWMASolvetimeHighMult = 6  // max solvetime =  6 * T
+)
 
 // CompactToBig converts a compact "bits" representation to a *big.Int target.
 // The compact format is: bits = (exponent << 24) | (mantissa & 0x7fffff).
@@ -113,4 +125,104 @@ func CalcNextRequiredDifficulty(lastBits uint32, actualTime int64, targetTime in
 	}
 
 	return BigToCompact(newTarget)
+}
+
+// NextRequiredBitsLWMA computes the next block's compact difficulty target using
+// LWMA-1 (Zawy's Linearly Weighted Moving Average) over a rolling window of the
+// previous LWMAWindow blocks. It retargets every block — no 2016-block window,
+// no 4× clamp — allowing fast response to hashrate changes.
+//
+// window must contain exactly LWMAWindow+1 consecutive headers ending at the
+// parent of the block being mined. window[0] is only used as the timestamp
+// anchor for the first solvetime. If len(window) < LWMAWindow+1 the caller
+// should fall back to powLimitBits (this function returns powLimitBits in that
+// case rather than panicking, so callers can safely pass short slices during
+// the first LWMAWindow blocks).
+//
+// blockTime is the target block time in seconds (e.g. 120 for Malairt).
+// powLimitBits is the easiest permitted target (compact form) — results are
+// clamped to never exceed it.
+//
+// Solvetimes are clamped per-entry to [LWMASolvetimeLowMult*T, LWMASolvetimeHighMult*T]
+// before contributing to the weighted sum, which neutralises single-block
+// timestamp manipulation. The final sum is also floored at 1 to prevent
+// division-by-zero when the window is suspiciously fast.
+func NextRequiredBitsLWMA(window []*primitives.BlockHeader, blockTime int64, powLimitBits uint32) uint32 {
+	const N = LWMAWindow
+	if len(window) < N+1 || blockTime <= 0 {
+		return powLimitBits
+	}
+	// Use only the last N+1 headers (caller may pass more).
+	w := window[len(window)-(N+1):]
+
+	T := blockTime
+	minST := int64(LWMASolvetimeLowMult) * T
+	maxST := int64(LWMASolvetimeHighMult) * T
+
+	var sumWeightedST int64
+	sumTargets := new(big.Int)
+
+	for i := 1; i <= N; i++ {
+		st := w[i].Timestamp - w[i-1].Timestamp
+		if st < minST {
+			st = minST
+		}
+		if st > maxST {
+			st = maxST
+		}
+		sumWeightedST += int64(i) * st
+		sumTargets.Add(sumTargets, CompactToBig(w[i].Bits))
+	}
+
+	// Floor to avoid tiny/negative denominators during extreme timestamp spoofing.
+	// N*(N+1)/2 * T / 4 is the denominator that would result if every solvetime
+	// were T/4 — the fastest "normal" window we want to allow to influence bits.
+	minDenom := int64(N*(N+1)/2) * T / 4
+	if sumWeightedST < minDenom {
+		sumWeightedST = minDenom
+	}
+
+	// nextTarget = avgTarget * sumWeightedST / (T * N*(N+1)/2)
+	denom := big.NewInt(int64(N*(N+1)/2) * T)
+	avg := new(big.Int).Quo(sumTargets, big.NewInt(int64(N)))
+	next := new(big.Int).Mul(avg, big.NewInt(sumWeightedST))
+	next.Quo(next, denom)
+
+	powLimit := CompactToBig(powLimitBits)
+	if next.Sign() <= 0 {
+		return powLimitBits
+	}
+	if next.Cmp(powLimit) > 0 {
+		next.Set(powLimit)
+	}
+	return BigToCompact(next)
+}
+
+// CalcMedianTimePast returns the median of the last up-to-11 block timestamps
+// ending at headers[len(headers)-1]. The median-time-past (MTP) is used as the
+// lower bound for a new block's timestamp, which prevents single-block
+// timestamp regression attacks while still tolerating small clock skew.
+//
+// If headers is empty, returns 0.
+func CalcMedianTimePast(headers []*primitives.BlockHeader) int64 {
+	const windowLen = 11
+	if len(headers) == 0 {
+		return 0
+	}
+	start := len(headers) - windowLen
+	if start < 0 {
+		start = 0
+	}
+	w := headers[start:]
+	ts := make([]int64, len(w))
+	for i, h := range w {
+		ts[i] = h.Timestamp
+	}
+	// Insertion sort — window is ≤11.
+	for i := 1; i < len(ts); i++ {
+		for j := i; j > 0 && ts[j-1] > ts[j]; j-- {
+			ts[j-1], ts[j] = ts[j], ts[j-1]
+		}
+	}
+	return ts[len(ts)/2]
 }

@@ -30,6 +30,7 @@ const defaultMaxPeers = 125
 type PeerServer struct {
 	bc           *chain.Blockchain
 	pool         *mempool.TxPool
+	orphans      *mempool.OrphanPool
 	params       *chain.ChainParams
 	peers        map[string]*Peer
 	mu           sync.RWMutex
@@ -47,6 +48,7 @@ func NewPeerServer(bc *chain.Blockchain, pool *mempool.TxPool, params *chain.Cha
 	return &PeerServer{
 		bc:       bc,
 		pool:     pool,
+		orphans:  mempool.NewOrphanPool(defaultOrphanCapacity),
 		params:   params,
 		peers:    make(map[string]*Peer),
 		msgCh:    make(chan PeerMessage, 256),
@@ -54,6 +56,10 @@ func NewPeerServer(bc *chain.Blockchain, pool *mempool.TxPool, params *chain.Cha
 		maxPeers: defaultMaxPeers,
 	}
 }
+
+// defaultOrphanCapacity caps how many parent-less transactions we hold at
+// once — a peer flooding us with fake orphans can't grow the pool beyond this.
+const defaultOrphanCapacity = 100
 
 // SetMaxPeers overrides the default inbound-peer cap. Values < 1 are ignored.
 // Must be called before Start().
@@ -111,8 +117,15 @@ func (s *PeerServer) ConnectPeer(addr string) error {
 		return fmt.Errorf("dial %s: %w", addr, err)
 	}
 	peer := NewPeer(conn, s.params, false)
-	s.addPeer(peer)
 
+	// Negotiate the encrypted transport BEFORE any goroutines touch the
+	// conn. Outbound side plays the initiator role.
+	if err := peer.EnableV2(true); err != nil {
+		conn.Close()
+		return fmt.Errorf("v2 handshake with %s: %w", addr, err)
+	}
+
+	s.addPeer(peer)
 	done := peer.Start(s.msgCh)
 	go func() {
 		<-done
@@ -120,9 +133,9 @@ func (s *PeerServer) ConnectPeer(addr string) error {
 		log.Printf("[p2p] peer %s disconnected", peer.Addr())
 	}()
 
-	// Initiate version handshake
+	// Initiate version handshake (inside the encrypted tunnel).
 	peer.SendVersion(protocolVersion, 0, userAgent, int32(s.bc.BestHeight()))
-	log.Printf("[p2p] connected to outbound peer %s", addr)
+	log.Printf("[p2p] connected to outbound peer %s (v2 encrypted)", addr)
 	return nil
 }
 
@@ -197,16 +210,23 @@ func (s *PeerServer) acceptLoop() {
 		}
 
 		peer := NewPeer(conn, s.params, true)
-		s.addPeer(peer)
 
-		done := peer.Start(s.msgCh)
-		go func(p *Peer) {
+		// Run the encrypted-transport handshake on a background goroutine so
+		// a slow or misbehaving peer can't stall the accept loop. On failure
+		// we drop the connection without adding it to the peer set.
+		go func(p *Peer, c net.Conn) {
+			if err := p.EnableV2(false); err != nil {
+				log.Printf("[p2p] v2 handshake with inbound %s failed: %v", c.RemoteAddr(), err)
+				c.Close()
+				return
+			}
+			s.addPeer(p)
+			done := p.Start(s.msgCh)
+			log.Printf("[p2p] accepted inbound peer %s (v2 encrypted)", c.RemoteAddr())
 			<-done
 			s.removePeer(p.Addr())
 			log.Printf("[p2p] inbound peer %s disconnected", p.Addr())
-		}(peer)
-
-		log.Printf("[p2p] accepted inbound peer %s", conn.RemoteAddr())
+		}(peer, conn)
 	}
 }
 
@@ -266,6 +286,8 @@ func (s *PeerServer) handleMessage(pm PeerMessage) {
 		s.handleTx(peer, msg.Payload)
 	case CmdGetBlocks:
 		s.handleGetBlocks(peer, msg.Payload)
+	case CmdGetHeaders:
+		s.handleGetHeaders(peer, msg.Payload)
 	case CmdHeaders:
 		s.handleHeaders(peer, msg.Payload)
 	default:
@@ -450,13 +472,79 @@ func (s *PeerServer) handleTx(peer *Peer, payload []byte) {
 	if err != nil {
 		return
 	}
-	if err := s.pool.Add(txMsg.Tx); err != nil {
-		return // duplicate or invalid
+	s.acceptOrOrphan(txMsg.Tx, peer.Addr())
+}
+
+// acceptOrOrphan feeds a tx through the full admission path:
+//  1. Try to resolve fees via UTXO + mempool. If all inputs resolve, run
+//     full script validation, Add to the mempool, broadcast INV, and
+//     release any orphans waiting for this txid as their parent.
+//  2. If some input can't resolve, stash the tx in the orphan pool keyed
+//     by the missing parent txid. It will be re-attempted when that parent
+//     shows up.
+func (s *PeerServer) acceptOrOrphan(tx *primitives.Transaction, sourceAddr string) {
+	fee, ok := s.computeFeeFromUTXO(tx)
+	if !ok {
+		// Can't compute fee → missing parent. Stash as an orphan.
+		s.orphans.Add(tx)
+		return
 	}
-	txid := txMsg.Tx.TxID()
-	log.Printf("[p2p] accepted tx %x from %s", txid, peer.Addr())
+	// Script validation — same interpreter pass block validation uses.
+	// A tx with bogus signatures is dropped here so we don't waste
+	// bandwidth relaying it to other peers or miner effort on blocks
+	// that would fail to validate.
+	nextHeight := s.bc.BestHeight() + 1
+	if err := chain.ValidateTx(tx, s.bc.UTXOSet(), nextHeight, s.params); err != nil {
+		log.Printf("[p2p] tx %x rejected at admission: %v", tx.TxID(), err)
+		return
+	}
+	if err := s.pool.Add(tx, fee); err != nil {
+		return // duplicate, RBF rejection, or policy-invalid
+	}
+	txid := tx.TxID()
+	log.Printf("[p2p] accepted tx %x from %s (fee=%d atoms)", txid, sourceAddr, fee)
 	inv := []InvVect{{Type: InvTypeTx, Hash: txid}}
-	s.broadcastExcept(CmdInv, (&InvMsg{Items: inv}).Encode(), peer.Addr())
+	s.broadcastExcept(CmdInv, (&InvMsg{Items: inv}).Encode(), sourceAddr)
+
+	// Any orphans that were waiting for THIS tx as their parent can now
+	// be re-attempted. Recurse — a newly-admitted orphan may itself
+	// unblock further descendants.
+	for _, orphan := range s.orphans.Release(txid) {
+		s.acceptOrOrphan(orphan, sourceAddr)
+	}
+}
+
+// computeFeeFromUTXO resolves every input's prevout and returns
+// totalIn − totalOut. Inputs are looked up first in the confirmed UTXO set
+// and, on miss, in the mempool — this fallback enables CPFP: a child
+// transaction whose parent is still unconfirmed can have its fee computed
+// and be accepted, so the pair (parent + child) propagates together at
+// whatever feerate the child pays on behalf of both.
+//
+// Returns ok=false only if an input is truly unresolvable (fabricated prevout,
+// or output spent elsewhere) or if the result would be negative.
+func (s *PeerServer) computeFeeFromUTXO(tx *primitives.Transaction) (int64, bool) {
+	utxo := s.bc.UTXOSet()
+	var totalIn int64
+	for _, in := range tx.Inputs {
+		if entry, found := utxo.Get(in.PreviousOutput); found {
+			totalIn += entry.Value
+			continue
+		}
+		if out, found := s.pool.GetOutput(in.PreviousOutput); found {
+			totalIn += out.Value
+			continue
+		}
+		return 0, false
+	}
+	var totalOut int64
+	for _, out := range tx.Outputs {
+		totalOut += out.Value
+	}
+	if totalIn < totalOut {
+		return 0, false
+	}
+	return totalIn - totalOut, true
 }
 
 func (s *PeerServer) handleGetBlocks(peer *Peer, payload []byte) {
@@ -494,6 +582,48 @@ func (s *PeerServer) handleGetBlocks(peer *Peer, payload []byte) {
 
 	if len(inv) > 0 {
 		peer.Send(&NetMessage{Command: CmdInv, Payload: (&InvMsg{Items: inv}).Encode()})
+	}
+}
+
+// handleGetHeaders responds to a peer's header-first sync request: find the
+// highest known hash from the locator, then stream up to 2000 consecutive
+// headers from there forward (capped at the tip or stopHash). 2000 matches
+// Bitcoin Core's headers-message limit — clients that process our reply
+// iteratively will walk 2000-at-a-time to catch up.
+func (s *PeerServer) handleGetHeaders(peer *Peer, payload []byte) {
+	req, err := DecodeGetHeadersMsg(payload)
+	if err != nil {
+		return
+	}
+	startHeight := uint64(0)
+	for _, locHash := range req.BlockLocator {
+		if hdr, err := s.bc.GetBlockHeader(locHash); err == nil {
+			if hdr.Height > startHeight {
+				startHeight = hdr.Height
+			}
+			break
+		}
+	}
+	tipHeight := s.bc.BestHeight()
+	const maxHeaders = 2000
+	headers := make([]primitives.BlockHeader, 0, maxHeaders)
+	stopHash := req.StopHash
+	for h := startHeight + 1; h <= tipHeight && len(headers) < maxHeaders; h++ {
+		hash, err := s.bc.GetBlockHashAtHeight(h)
+		if err != nil {
+			break
+		}
+		hdr, err := s.bc.GetBlockHeader(hash)
+		if err != nil {
+			break
+		}
+		headers = append(headers, *hdr)
+		if hash == stopHash {
+			break
+		}
+	}
+	if len(headers) > 0 {
+		peer.Send(&NetMessage{Command: CmdHeaders, Payload: (&HeadersMsg{Headers: headers}).Encode()})
 	}
 }
 

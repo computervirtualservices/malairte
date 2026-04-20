@@ -154,7 +154,9 @@ func (s *PayoutSweeper) checkAndSweep() error {
 		return fmt.Errorf("build tx: %w", err)
 	}
 
-	if err := s.pool.Add(tx); err != nil {
+	// The sweep builder subtracts s.feeAtoms from the destination payout, so
+	// that flat fee IS the transaction fee (no other surplus inputs-vs-outputs).
+	if err := s.pool.Add(tx, s.feeAtoms); err != nil {
 		return fmt.Errorf("mempool reject: %w", err)
 	}
 	if s.peerSrv != nil {
@@ -222,8 +224,9 @@ func (s *PayoutSweeper) buildSweepTx(utxos []*chain.UTXO, pubKey []byte) (*primi
 	// Sign each input with SIGHASH_ALL using the source scriptPubKey as the subscript.
 	srcScript := primitives.P2PKHScript(crypto.Hash160(pubKey))
 
+	chainID := s.bc.Params().Net
 	for i := range tx.Inputs {
-		sigHash := chain.CalcSigHash(tx, i, srcScript)
+		sigHash := chain.CalcSigHash(tx, i, srcScript, chainID)
 		sig, err := crypto.Sign(s.minerKey, sigHash[:])
 		if err != nil {
 			return nil, fmt.Errorf("sign input %d: %w", i, err)

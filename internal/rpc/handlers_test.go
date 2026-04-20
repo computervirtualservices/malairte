@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -119,6 +120,84 @@ type testEnv struct {
 	ts   *httptest.Server
 	pool *mempool.TxPool
 	bc   *chain.Blockchain
+}
+
+// TestRPC_BasicAuth_RejectsMissingCreds verifies that when SetAuth is
+// configured, unauthenticated requests get a 401 with WWW-Authenticate.
+func TestRPC_BasicAuth_RejectsMissingCreds(t *testing.T) {
+	params := new(chain.ChainParams)
+	*params = chain.TestNetParams
+	bc, _ := chain.NewBlockchain(params, newTestDB())
+	pool := mempool.NewTxPool()
+	srv := rpc.NewServer(bc, pool, nil, nil, params)
+	srv.SetAuth("user", "pass")
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	// No Authorization header → 401.
+	resp, err := http.Post(ts.URL, "application/json", bytes.NewReader([]byte(
+		`{"jsonrpc":"1.0","id":1,"method":"getblockchaininfo","params":[]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status: got %d, want 401", resp.StatusCode)
+	}
+	if ch := resp.Header.Get("WWW-Authenticate"); ch == "" {
+		t.Error("missing WWW-Authenticate header on 401")
+	}
+}
+
+// TestRPC_BasicAuth_AcceptsCorrectCreds verifies authenticated requests
+// are processed normally.
+func TestRPC_BasicAuth_AcceptsCorrectCreds(t *testing.T) {
+	params := new(chain.ChainParams)
+	*params = chain.TestNetParams
+	bc, _ := chain.NewBlockchain(params, newTestDB())
+	pool := mempool.NewTxPool()
+	srv := rpc.NewServer(bc, pool, nil, nil, params)
+	srv.SetAuth("user", "pass")
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL, bytes.NewReader([]byte(
+		`{"jsonrpc":"1.0","id":1,"method":"getblockchaininfo","params":[]}`)))
+	req.SetBasicAuth("user", "pass")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status: got %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestRPC_BasicAuth_WrongCredsRejected verifies a wrong password returns 401.
+func TestRPC_BasicAuth_WrongCredsRejected(t *testing.T) {
+	params := new(chain.ChainParams)
+	*params = chain.TestNetParams
+	bc, _ := chain.NewBlockchain(params, newTestDB())
+	pool := mempool.NewTxPool()
+	srv := rpc.NewServer(bc, pool, nil, nil, params)
+	srv.SetAuth("user", "correct-password")
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL, bytes.NewReader([]byte(
+		`{"jsonrpc":"1.0","id":1,"method":"getblockchaininfo","params":[]}`)))
+	req.SetBasicAuth("user", "wrong-password")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status: got %d, want 401", resp.StatusCode)
+	}
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -327,7 +406,7 @@ func TestGetMempoolInfo_WithTx(t *testing.T) {
 		}},
 		Outputs: []primitives.TxOutput{{Value: 1_000_000, ScriptPubKey: []byte{0x51}}},
 	}
-	_ = env.pool.Add(tx)
+	_ = env.pool.Add(tx, 1_000)
 
 	resp := callRPC(t, env.ts.URL, "getmempoolinfo", nil)
 	result := rpcResult(t, resp).(map[string]interface{})
@@ -348,7 +427,7 @@ func TestGetRawTransaction_Mempool(t *testing.T) {
 		}},
 		Outputs: []primitives.TxOutput{{Value: 1_000_000, ScriptPubKey: []byte{0x51}}},
 	}
-	_ = env.pool.Add(tx)
+	_ = env.pool.Add(tx, 1_000)
 	txid := tx.TxID()
 	txidHex := hex.EncodeToString(txid[:])
 
@@ -370,7 +449,7 @@ func TestGetRawTransaction_Mempool_Verbose(t *testing.T) {
 		}},
 		Outputs: []primitives.TxOutput{{Value: 1_000_000, ScriptPubKey: []byte{0x51}}},
 	}
-	_ = env.pool.Add(tx)
+	_ = env.pool.Add(tx, 1_000)
 	txid := tx.TxID()
 	txidHex := hex.EncodeToString(txid[:])
 
@@ -464,13 +543,61 @@ func TestValidateAddress_MissingParam(t *testing.T) {
 
 func TestSendRawTransaction_Valid(t *testing.T) {
 	env := newTestEnv(t)
+
+	// Previously this test spent the genesis coinbase directly, which
+	// happened to slip through because mempool admission didn't run script
+	// validation. Now mempool admission runs the full ValidateTx pipeline —
+	// including the 100-block coinbase-maturity rule — so that shortcut no
+	// longer works. To assert the happy-path admission flow without mining
+	// 100 blocks first, we inject a non-coinbase UTXO directly into the
+	// UTXO set and spend that. The shape of the tx and its serialization
+	// are identical to what a real sender would produce.
+	//
+	// NOTE: this bypasses chain consistency — there is no confirmed tx
+	// backing the injected UTXO — but that's fine for an RPC-handler unit
+	// test whose purpose is to exercise sendrawtransaction end-to-end.
+	var fakeTxID [32]byte
+	for i := range fakeTxID {
+		fakeTxID[i] = byte(0xE0 | i)
+	}
+	fakeUTXO := &chain.UTXO{
+		TxID:   fakeTxID,
+		Index:  0,
+		Value:  1_000_000,
+		Script: primitives.P2PKHScript([20]byte{0xDE, 0xAD, 0xBE, 0xEF}),
+		Height: 0,
+	}
+	// Direct DB write under the UTXO key format the set expects. Bypasses
+	// the normal Apply path because we're not applying a real block here.
+	env.bc.UTXOSet().InjectForTest(fakeUTXO)
+
+	// Build a tx that spends the injected UTXO. Since the injected UTXO
+	// is P2PKH and we don't have the matching private key, script
+	// validation would still reject it — so the scriptPubKey is a
+	// permissive non-P2PKH/P2WPKH/P2TR script that ExecuteScript passes
+	// silently. The mempool only cares that (a) inputs resolve, (b) fee ≥
+	// 0, (c) script evaluator returns nil; all three hold here.
+	permissiveTxID := [32]byte{}
+	copy(permissiveTxID[:], fakeTxID[:])
+	permissiveUTXO := &chain.UTXO{
+		TxID:   [32]byte{0xDD, 0xCC},
+		Index:  0,
+		Value:  1_000_000,
+		Script: []byte{0x51}, // OP_1 — not P2PKH/P2WPKH/P2TR, ExecuteScript passes
+		Height: 0,
+	}
+	env.bc.UTXOSet().InjectForTest(permissiveUTXO)
+
 	tx := &primitives.Transaction{
 		Version: 1,
 		Inputs: []primitives.TxInput{{
-			PreviousOutput: primitives.OutPoint{TxID: [32]byte{0x01}, Index: 0},
+			PreviousOutput: primitives.OutPoint{TxID: permissiveUTXO.TxID, Index: 0},
 			Sequence:       0xFFFFFFFF,
 		}},
-		Outputs: []primitives.TxOutput{{Value: 1_000_000, ScriptPubKey: []byte{0x51}}},
+		Outputs: []primitives.TxOutput{{
+			Value:        permissiveUTXO.Value - 100,
+			ScriptPubKey: []byte{0x51},
+		}},
 	}
 	hexStr := hex.EncodeToString(tx.Serialize())
 	resp := callRPC(t, env.ts.URL, "sendrawtransaction", []interface{}{hexStr})
@@ -478,10 +605,228 @@ func TestSendRawTransaction_Valid(t *testing.T) {
 	if !ok || len(txidHex) != 64 {
 		t.Errorf("expected 64-char txid, got %v", rpcResult(t, resp))
 	}
-	// Must now be in the mempool.
 	expectedTxID := tx.TxID()
 	if !env.pool.Has(expectedTxID) {
 		t.Error("tx should be in mempool after sendrawtransaction")
+	}
+}
+
+// ── getblocktemplate ──────────────────────────────────────────────────────────
+
+func TestRPC_GetBlockTemplate_ExposesWitnessCommitment(t *testing.T) {
+	env := newTestEnv(t)
+	resp := callRPC(t, env.ts.URL, "getblocktemplate", nil)
+	result := rpcResult(t, resp).(map[string]interface{})
+
+	// default_witness_commitment must be present and a 38-byte OP_RETURN:
+	// 0x6a 0x24 0xaa21a9ed <32 bytes>.
+	cm, ok := result["default_witness_commitment"].(string)
+	if !ok {
+		t.Fatal("missing default_witness_commitment")
+	}
+	cmBytes, err := hex.DecodeString(cm)
+	if err != nil {
+		t.Fatalf("default_witness_commitment is not hex: %v", err)
+	}
+	if len(cmBytes) != 38 {
+		t.Errorf("commitment length: got %d, want 38", len(cmBytes))
+	}
+	if cmBytes[0] != 0x6a || cmBytes[1] != 0x24 {
+		t.Errorf("commitment prefix: got %02x%02x, want 6a24", cmBytes[0], cmBytes[1])
+	}
+	if cmBytes[2] != 0xaa || cmBytes[3] != 0x21 || cmBytes[4] != 0xa9 || cmBytes[5] != 0xed {
+		t.Errorf("magic: got %02x%02x%02x%02x, want aa21a9ed",
+			cmBytes[2], cmBytes[3], cmBytes[4], cmBytes[5])
+	}
+
+	// mintime field is present and positive
+	if mt, ok := result["mintime"].(float64); !ok || mt <= 0 {
+		t.Errorf("mintime: got %v, want > 0", result["mintime"])
+	}
+
+	// sizelimit and weightlimit reflect the configured MaxBlockWeight
+	if sl, ok := result["sizelimit"].(float64); !ok || int(sl) != 1_000_000 {
+		t.Errorf("sizelimit: got %v, want 1_000_000", result["sizelimit"])
+	}
+	if wl, ok := result["weightlimit"].(float64); !ok || int(wl) != 4_000_000 {
+		t.Errorf("weightlimit: got %v, want 4_000_000", result["weightlimit"])
+	}
+}
+
+// ── Light-client RPCs ─────────────────────────────────────────────────────────
+
+func TestRPC_GetBlockFilter_Genesis(t *testing.T) {
+	env := newTestEnv(t)
+	genesisHash := hex.EncodeToString(func() []byte { h := env.bc.BestHash(); return h[:] }())
+
+	resp := callRPC(t, env.ts.URL, "getblockfilter", []interface{}{genesisHash})
+	result := rpcResult(t, resp).(map[string]interface{})
+	if result["blockhash"] != genesisHash {
+		t.Errorf("blockhash: got %v, want %v", result["blockhash"], genesisHash)
+	}
+	filter, ok := result["filter"].(string)
+	if !ok || len(filter) == 0 {
+		t.Errorf("filter: got %v, want non-empty hex", result["filter"])
+	}
+	if _, err := hex.DecodeString(filter); err != nil {
+		t.Errorf("filter is not valid hex: %v", err)
+	}
+	// Genesis block has a filter header committed at ingestion.
+	if header, ok := result["header"].(string); !ok || len(header) != 64 {
+		t.Errorf("header: got %v, want 64-char hex", result["header"])
+	}
+}
+
+func TestRPC_GetBlockFilter_UnknownHash(t *testing.T) {
+	env := newTestEnv(t)
+	bogus := "00" + strings.Repeat("11", 31)
+	resp := callRPC(t, env.ts.URL, "getblockfilter", []interface{}{bogus})
+	if resp["error"] == nil {
+		t.Error("expected error for unknown block hash")
+	}
+}
+
+func TestRPC_GetCFHeaders_GenesisOnly(t *testing.T) {
+	env := newTestEnv(t)
+	genesisHash := hex.EncodeToString(func() []byte { h := env.bc.BestHash(); return h[:] }())
+	resp := callRPC(t, env.ts.URL, "getcfheaders", []interface{}{0, genesisHash})
+	result := rpcResult(t, resp).(map[string]interface{})
+	if result["filter_type"] != "basic" {
+		t.Errorf("filter_type: got %v, want basic", result["filter_type"])
+	}
+	headers, ok := result["headers"].([]interface{})
+	if !ok {
+		t.Fatalf("headers missing or wrong type: %T", result["headers"])
+	}
+	if len(headers) != 1 {
+		t.Errorf("headers length: got %d, want 1", len(headers))
+	}
+	if h, ok := headers[0].(string); !ok || len(h) != 64 {
+		t.Errorf("header[0]: got %v, want 64-char hex", headers[0])
+	}
+}
+
+func TestRPC_GetCFCheckpt_NoCheckpointsAtLowHeight(t *testing.T) {
+	env := newTestEnv(t)
+	genesisHash := hex.EncodeToString(func() []byte { h := env.bc.BestHash(); return h[:] }())
+	resp := callRPC(t, env.ts.URL, "getcfcheckpt", []interface{}{genesisHash})
+	result := rpcResult(t, resp).(map[string]interface{})
+	// At height 0, no 1000-block checkpoints exist yet.
+	headers := result["filter_headers"].([]interface{})
+	if len(headers) != 0 {
+		t.Errorf("filter_headers at height 0: got %d, want 0", len(headers))
+	}
+}
+
+// ── Snapshot RPCs ─────────────────────────────────────────────────────────────
+
+func TestRPC_DumpSnapshot_Genesis(t *testing.T) {
+	env := newTestEnv(t)
+	resp := callRPC(t, env.ts.URL, "dumpsnapshot", nil)
+	result := rpcResult(t, resp).(map[string]interface{})
+	// Height must be 0 for a fresh chain, snapshot hex must begin with the
+	// 4-byte "MLSN" magic.
+	if h := result["height"].(float64); int(h) != 0 {
+		t.Errorf("height: got %v, want 0", h)
+	}
+	if cnt := result["utxo_count"].(float64); int(cnt) != 1 {
+		t.Errorf("utxo_count at genesis: got %v, want 1", cnt)
+	}
+	hexStr, ok := result["snapshot_hex"].(string)
+	if !ok || len(hexStr) < 8 {
+		t.Fatalf("snapshot_hex missing or too short: %v", result["snapshot_hex"])
+	}
+	rawBytes, err := hex.DecodeString(hexStr)
+	if err != nil {
+		t.Fatalf("decode snapshot hex: %v", err)
+	}
+	if string(rawBytes[:4]) != "MLSN" {
+		t.Errorf("magic: got %q, want MLSN", string(rawBytes[:4]))
+	}
+	// Hash field must match what DeserializeSnapshot(raw).Hash() produces.
+	reloaded, err := chain.DeserializeSnapshot(rawBytes)
+	if err != nil {
+		t.Fatalf("DeserializeSnapshot: %v", err)
+	}
+	gotHash := reloaded.Hash()
+	if hex.EncodeToString(gotHash[:]) != result["hash"].(string) {
+		t.Errorf("hash: RPC says %s, recomputed %s",
+			result["hash"], hex.EncodeToString(gotHash[:]))
+	}
+}
+
+func TestRPC_LoadSnapshot_RoundTripFromDump(t *testing.T) {
+	env := newTestEnv(t)
+	// Dump current snapshot.
+	dumpResp := callRPC(t, env.ts.URL, "dumpsnapshot", nil)
+	dumpResult := rpcResult(t, dumpResp).(map[string]interface{})
+	hexStr := dumpResult["snapshot_hex"].(string)
+
+	// Create a DIFFERENT node, load the snapshot into it, check the UTXOs
+	// show up there. Uses its own test env.
+	env2 := newTestEnv(t)
+	loadResp := callRPC(t, env2.ts.URL, "loadsnapshot", []interface{}{hexStr})
+	loadResult := rpcResult(t, loadResp).(map[string]interface{})
+	if loadResult["loaded"].(float64) != 1 {
+		t.Errorf("loaded: got %v, want 1", loadResult["loaded"])
+	}
+	if loadResult["hash"] != dumpResult["hash"] {
+		t.Errorf("hash mismatch: dump %v, load %v",
+			dumpResult["hash"], loadResult["hash"])
+	}
+}
+
+// ── estimatesmartfee ──────────────────────────────────────────────────────────
+
+func TestRPC_EstimateSmartFee_EmptyMempool(t *testing.T) {
+	env := newTestEnv(t)
+	// With no mempool, the estimator returns the min-relay feerate.
+	resp := callRPC(t, env.ts.URL, "estimatesmartfee", []interface{}{6})
+	result := rpcResult(t, resp).(map[string]interface{})
+	if result["blocks"].(float64) != 6 {
+		t.Errorf("blocks: got %v, want 6", result["blocks"])
+	}
+	fr := result["feerate"].(float64)
+	if fr < 1 {
+		t.Errorf("feerate: got %v, want ≥ 1 (min-relay)", fr)
+	}
+}
+
+func TestRPC_EstimateSmartFee_DifferentTargets(t *testing.T) {
+	env := newTestEnv(t)
+	for _, target := range []int{1, 3, 6, 24, 144} {
+		resp := callRPC(t, env.ts.URL, "estimatesmartfee", []interface{}{target})
+		result := rpcResult(t, resp).(map[string]interface{})
+		if int(result["blocks"].(float64)) != target {
+			t.Errorf("confTarget %d: got blocks=%v", target, result["blocks"])
+		}
+	}
+}
+
+// TestSendRawTransaction_RejectsImmatureCoinbase proves the new mempool
+// script validation actually fires: spending a coinbase before its 100-
+// confirmation maturity window now fails at admission (not after mining
+// wastes work).
+func TestSendRawTransaction_RejectsImmatureCoinbase(t *testing.T) {
+	env := newTestEnv(t)
+	genesis, err := env.bc.GetBlock(env.bc.BestHash())
+	if err != nil {
+		t.Fatal(err)
+	}
+	coinbase := genesis.Txs[0]
+
+	tx := &primitives.Transaction{
+		Version: 1,
+		Inputs: []primitives.TxInput{{
+			PreviousOutput: primitives.OutPoint{TxID: coinbase.TxID(), Index: 0},
+			Sequence:       0xFFFFFFFF,
+		}},
+		Outputs: []primitives.TxOutput{{Value: 1, ScriptPubKey: []byte{0x51}}},
+	}
+	hexStr := hex.EncodeToString(tx.Serialize())
+	resp := callRPC(t, env.ts.URL, "sendrawtransaction", []interface{}{hexStr})
+	if resp["error"] == nil {
+		t.Error("expected immature-coinbase rejection")
 	}
 }
 

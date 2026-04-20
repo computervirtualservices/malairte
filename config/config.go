@@ -18,6 +18,12 @@ type Config struct {
 	Network string
 	// RPCAddr is the host:port for the JSON-RPC server (localhost only).
 	RPCAddr string
+	// RPCUser, when non-empty together with RPCPass, requires HTTP Basic
+	// Auth on every RPC call. Intended for nodes that bind RPC to a
+	// publicly-reachable address (e.g. for mobile-wallet use). Leaving
+	// either empty = no auth, backward-compatible default.
+	RPCUser string
+	RPCPass string
 	// P2PAddr is the host:port for the P2P listen socket.
 	P2PAddr string
 	// Mine enables the CPU miner when true.
@@ -89,6 +95,10 @@ func LoadConfig() (*Config, error) {
 		"Network to use: mainnet or testnet")
 	flag.StringVar(&cfg.RPCAddr, "rpc-addr", cfg.RPCAddr,
 		"JSON-RPC server listen address (must be localhost)")
+	flag.StringVar(&cfg.RPCUser, "rpc-user", cfg.RPCUser,
+		"Username for RPC HTTP Basic Auth (empty = no auth)")
+	flag.StringVar(&cfg.RPCPass, "rpc-pass", cfg.RPCPass,
+		"Password for RPC HTTP Basic Auth (empty = no auth)")
 	flag.StringVar(&cfg.P2PAddr, "p2p-addr", cfg.P2PAddr,
 		"P2P listen address")
 	flag.BoolVar(&cfg.Mine, "mine", cfg.Mine,
