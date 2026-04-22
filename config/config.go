@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // Config holds the full runtime configuration for the node daemon.
@@ -62,6 +63,16 @@ type Config struct {
 	// HeartbeatWorker is an optional human-readable identifier for this rig
 	// (e.g. "gpu-rig-1"). Lets a single account aggregate several workers.
 	HeartbeatWorker string
+	// SyncBeforeMine, when true, makes the node wait for its local chain to
+	// catch up to the best connected peer before starting the miner. This
+	// prevents a freshly-installed node from building an orphan fork on top of
+	// genesis while it is still downloading the canonical chain. Default: true.
+	SyncBeforeMine bool
+	// SyncWaitTimeout caps how long WaitForInitialSync blocks before the node
+	// gives up and starts mining anyway. Users running fully offline (no
+	// reachable seeds) still get a miner after this timeout, accepting that
+	// their blocks will be orphaned once they rejoin the network. Default: 5m.
+	SyncWaitTimeout time.Duration
 }
 
 // DefaultConfig returns a Config with sensible production defaults.
@@ -81,6 +92,8 @@ func DefaultConfig() *Config {
 		GPU:                  false,
 		PayoutAddr:           "",
 		PayoutThresholdAtoms: 100_000_000_000, // 1000 MLRT
+		SyncBeforeMine:       true,
+		SyncWaitTimeout:      5 * time.Minute,
 	}
 }
 
@@ -136,6 +149,14 @@ func LoadConfig() (*Config, error) {
 	flag.StringVar(&cfg.HeartbeatWorker, "heartbeat-worker", cfg.HeartbeatWorker,
 		"Optional worker identifier used when reporting to --heartbeat-url "+
 			"(e.g. \"gpu-rig-1\")")
+	flag.BoolVar(&cfg.SyncBeforeMine, "sync-before-mine", cfg.SyncBeforeMine,
+		"When true (default), wait for the local chain to catch up to the best "+
+			"peer before starting the miner. Prevents a fresh install from mining "+
+			"an orphan fork on top of genesis")
+	flag.DurationVar(&cfg.SyncWaitTimeout, "sync-wait-timeout", cfg.SyncWaitTimeout,
+		"Maximum time to wait for initial sync before starting the miner anyway "+
+			"(set to 0 to skip the wait entirely). Only relevant when --mine and "+
+			"--sync-before-mine are set")
 
 	flag.Parse()
 

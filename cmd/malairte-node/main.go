@@ -4,13 +4,16 @@
 package main
 
 import (
+	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -24,7 +27,7 @@ import (
 	"github.com/computervirtualservices/malairte/internal/storage"
 )
 
-const version = "0.1.0-dev"
+const version = "0.2.0"
 
 func main() {
 	// 1. Load configuration from flags
@@ -126,12 +129,14 @@ func main() {
 	// 11. Optionally start CPU miner
 	var miner *mining.CpuMiner
 	if cfg.Mine {
+		// Resolve the miner key up-front so we can derive the reward
+		// address before anything else — the heartbeat needs both so the
+		// explorer can render a per-address sync-progress badge before
+		// mining has even started.
 		minerKey, err := resolveMinerKey(cfg.MinerKey)
 		if err != nil {
 			log.Fatalf("Resolve miner key: %v", err)
 		}
-
-		// Derive and display the miner's reward address
 		pubKey, err := crypto.PubKeyFromPrivKey(minerKey)
 		if err != nil {
 			log.Fatalf("Derive miner public key: %v", err)
@@ -142,28 +147,78 @@ func main() {
 		}
 		log.Printf("Mining reward address: %s", addr)
 
+		// Late-bound miner + lifecycle flag consumed by the heartbeat
+		// goroutine. isMining flips from false → true the moment the CPU
+		// miner actually starts; up until then the heartbeat reports
+		// "syncing" with the current tip so the explorer can draw a
+		// progress bar.
+		var minerPtr atomic.Pointer[mining.CpuMiner]
+		var isMining atomic.Bool
+
+		var hb *mining.HeartbeatSender
+		if cfg.HeartbeatURL != "" {
+			hb = mining.NewHeartbeatSender(
+				cfg.HeartbeatURL, hex.EncodeToString(pubKey), addr, cfg.HeartbeatWorker,
+				func() int64 {
+					if m := minerPtr.Load(); m != nil {
+						return m.HashRate.Load()
+					}
+					return 0
+				},
+			).WithChainStatus(
+				func() string {
+					if isMining.Load() {
+						return "mining"
+					}
+					return "syncing"
+				},
+				func() uint64 { return bc.BestHeight() },
+				func() int32 { h, _ := peerSrv.BestPeerHeight(); return h },
+			)
+			// 15s keeps the sync progress bar responsive without flooding
+			// the explorer. Small constant across both phases keeps the
+			// lifecycle code simple.
+			hb.SetInterval(15 * time.Second)
+			hb.Start()
+			defer hb.Stop()
+		}
+
+		// Before touching the miner, make sure we are building on top of the
+		// canonical chain rather than mining an orphan fork from genesis.
+		// Without this gate, a freshly-installed node (or any node that fell
+		// behind while offline) would extend its own chain until it happened
+		// to catch up — and every block mined in between would be orphaned
+		// once peers advertised their longer chain.
+		if cfg.SyncBeforeMine && cfg.SyncWaitTimeout > 0 {
+			log.Printf("Waiting up to %s for initial chain sync before mining (tip=%d)...",
+				cfg.SyncWaitTimeout, bc.BestHeight())
+			ctx, cancel := context.WithTimeout(context.Background(), cfg.SyncWaitTimeout)
+			err := peerSrv.WaitForInitialSync(ctx)
+			cancel()
+			switch {
+			case err == nil:
+				// Synced — proceed to mining.
+			case errors.Is(err, context.DeadlineExceeded):
+				log.Printf("WARNING: initial sync did not complete within %s; "+
+					"starting miner anyway at tip=%d — blocks may be orphaned if "+
+					"the network advances past us",
+					cfg.SyncWaitTimeout, bc.BestHeight())
+			default:
+				log.Fatalf("Wait for initial sync: %v", err)
+			}
+		}
+
 		miner = mining.NewCpuMiner(bc, pool, minerKey, cfg.MineThreads, peerSrv)
 		miner.SetGPU(cfg.GPU)
 		rpcSrv.SetMiner(miner)
 		miner.Start()
+		minerPtr.Store(miner)
+		isMining.Store(true)
 		defer miner.Stop()
 		if cfg.GPU {
 			log.Printf("Miner started: %d CPU thread(s) + GPU (if OpenCL device available)", cfg.MineThreads)
 		} else {
 			log.Printf("CPU miner started with %d thread(s)", cfg.MineThreads)
-		}
-
-		// Optional heartbeat: when --heartbeat-url is set, ping the explorer
-		// every 60s with the miner's address, pubkey, and current hashrate so
-		// the dashboard can show this rig as Active. The server verifies
-		// hash160(pubkey) == address, so no separate token is required.
-		if cfg.HeartbeatURL != "" {
-			hb := mining.NewHeartbeatSender(
-				cfg.HeartbeatURL, hex.EncodeToString(pubKey), addr, cfg.HeartbeatWorker,
-				func() int64 { return miner.HashRate.Load() },
-			)
-			hb.Start()
-			defer hb.Stop()
 		}
 
 		// Optional auto-payout sweep: when --payout-addr is set, periodically

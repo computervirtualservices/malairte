@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
+	"time"
 
 	"github.com/computervirtualservices/malairte/internal/crypto"
 )
@@ -130,6 +133,8 @@ func main() {
 		err = cmdRPC(*rpcURL, "validateaddress", []interface{}{cmdArgs[0]})
 	case "getblocktemplate":
 		err = cmdRPC(*rpcURL, "getblocktemplate", []interface{}{map[string]interface{}{}})
+	case "status":
+		err = cmdStatus(*rpcURL)
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -167,6 +172,11 @@ Commands:
   getmininginfo                   Get mining statistics
   getblocktemplate                Get a block template for mining
   validateaddress <addr>          Validate an address
+  status                          Live sync/mining dashboard — prints one line
+                                  every ~2 seconds until Ctrl-C. Shows
+                                  progress while the node is downloading the
+                                  chain, then switches to hashrate + tip
+                                  once mining starts.
   stop                            Stop the node
 
 Options:
@@ -299,4 +309,145 @@ func callRPC(rpcURL, method string, params []interface{}) (map[string]interface{
 		return nil, fmt.Errorf("decode response (status %d): %w", resp.StatusCode, err)
 	}
 	return result, nil
+}
+
+// cmdStatus prints a single live-updating line that shows the node's sync
+// progress during initial block download and, once synced, flips to a
+// mining summary. Intended for end users running the node as a background
+// service — they can open a terminal, run "malairte-cli status", and see
+// what the daemon is doing without trawling the log file. Exits on Ctrl-C.
+func cmdStatus(rpcURL string) error {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+
+	// First render immediately so users don't wait 2 seconds for anything
+	// to appear.
+	printStatusOnce(rpcURL)
+	for {
+		select {
+		case <-sigCh:
+			fmt.Println()
+			return nil
+		case <-t.C:
+			printStatusOnce(rpcURL)
+		}
+	}
+}
+
+func printStatusOnce(rpcURL string) {
+	mining, mErr := callRPC(rpcURL, "getmininginfo", nil)
+	peers, pErr := callRPC(rpcURL, "getpeerinfo", nil)
+	if mErr != nil || pErr != nil {
+		fmt.Printf("\r[offline] node not responding at %s — is the service running?                \r", rpcURL)
+		return
+	}
+
+	minfo, _ := mining["result"].(map[string]interface{})
+	pinfo, _ := peers["result"].([]interface{})
+
+	height := int64(0)
+	if v, ok := minfo["blocks"].(float64); ok {
+		height = int64(v)
+	}
+	hps := int64(0)
+	if v, ok := minfo["hashespersec"].(float64); ok {
+		hps = int64(v)
+	}
+	generate := false
+	if v, ok := minfo["generate"].(bool); ok {
+		generate = v
+	}
+
+	bestPeer := int64(0)
+	for _, raw := range pinfo {
+		p, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if v, ok := p["startheight"].(float64); ok && int64(v) > bestPeer {
+			bestPeer = int64(v)
+		}
+	}
+
+	// "Syncing" heuristic: we have at least one peer advertising a height
+	// above ours, so blocks are still flowing in. Once the local tip catches
+	// up the progress bar disappears and the miner summary takes over.
+	if bestPeer > height {
+		pct := 0
+		if bestPeer > 0 {
+			pct = int(height * 100 / bestPeer)
+		}
+		fmt.Printf("\r[syncing] block %s / %s  (%d%%)  %s  peers=%d        \r",
+			humanInt(height), humanInt(bestPeer), pct, progressBar(pct, 20), len(pinfo))
+		return
+	}
+
+	if generate {
+		fmt.Printf("\r[mining]  height=%s  hashrate=%s  peers=%d                         \r",
+			humanInt(height), humanHashrate(hps), len(pinfo))
+		return
+	}
+
+	fmt.Printf("\r[relay]   height=%s  peers=%d  (mining disabled)                        \r",
+		humanInt(height), len(pinfo))
+}
+
+func progressBar(pct, width int) string {
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	fill := pct * width / 100
+	bar := make([]byte, 0, width+2)
+	bar = append(bar, '[')
+	for i := 0; i < width; i++ {
+		if i < fill {
+			bar = append(bar, '#')
+		} else {
+			bar = append(bar, '.')
+		}
+	}
+	bar = append(bar, ']')
+	return string(bar)
+}
+
+func humanInt(n int64) string {
+	// thousands separators without bringing in a locale package.
+	sign := ""
+	if n < 0 {
+		sign = "-"
+		n = -n
+	}
+	s := strconv.FormatInt(n, 10)
+	if len(s) <= 3 {
+		return sign + s
+	}
+	out := make([]byte, 0, len(s)+len(s)/3)
+	for i, c := range []byte(s) {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, c)
+	}
+	return sign + string(out)
+}
+
+func humanHashrate(hps int64) string {
+	switch {
+	case hps >= 1_000_000_000_000:
+		return fmt.Sprintf("%.2f TH/s", float64(hps)/1e12)
+	case hps >= 1_000_000_000:
+		return fmt.Sprintf("%.2f GH/s", float64(hps)/1e9)
+	case hps >= 1_000_000:
+		return fmt.Sprintf("%.2f MH/s", float64(hps)/1e6)
+	case hps >= 1_000:
+		return fmt.Sprintf("%.2f kH/s", float64(hps)/1e3)
+	default:
+		return fmt.Sprintf("%d H/s", hps)
+	}
 }

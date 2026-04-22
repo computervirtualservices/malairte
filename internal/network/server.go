@@ -1,6 +1,7 @@
 package network
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math/rand"
@@ -112,6 +113,12 @@ func (s *PeerServer) Stop() {
 
 // ConnectPeer dials an outbound connection to the given address.
 func (s *PeerServer) ConnectPeer(addr string) error {
+	if s.isSelfAddr(addr) {
+		return fmt.Errorf("refusing self-dial to %s", addr)
+	}
+	if s.hasPeer(addr) {
+		return fmt.Errorf("already connected to %s", addr)
+	}
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", addr, err)
@@ -159,6 +166,74 @@ func (s *PeerServer) PeerCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.peers)
+}
+
+// BestPeerHeight returns the highest startheight advertised by any connected
+// peer together with the number of peers currently connected. When no peers
+// are connected it returns (0, 0).
+func (s *PeerServer) BestPeerHeight() (int32, int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var best int32
+	for _, p := range s.peers {
+		if h := p.StartHeight(); h > best {
+			best = h
+		}
+	}
+	return best, len(s.peers)
+}
+
+// WaitForInitialSync blocks until the local chain has caught up to the best
+// height advertised by connected peers, or until ctx is done.
+//
+// The caller is responsible for setting a deadline on ctx; this function will
+// otherwise wait indefinitely for a peer to appear. On ctx expiry the
+// function returns ctx.Err() — callers that still want to proceed (e.g. to
+// mine locally while offline) should treat context.DeadlineExceeded as a
+// warning rather than a fatal error.
+//
+// The function treats "no peers connected" as "not yet synced" so that a
+// fresh install with seeds configured cannot race past the wait before the
+// first handshake completes. Once at least one peer has reported its
+// startheight, sync is considered complete when our tip reaches that height.
+func (s *PeerServer) WaitForInitialSync(ctx context.Context) error {
+	const (
+		pollInterval  = 1 * time.Second
+		logInterval   = 10 * time.Second
+		peerGraceTime = 15 * time.Second
+	)
+
+	start := time.Now()
+	lastLog := time.Now().Add(-logInterval)
+
+	for {
+		ours := s.bc.BestHeight()
+		best, peers := s.BestPeerHeight()
+
+		switch {
+		case peers == 0:
+			if time.Since(start) >= peerGraceTime && time.Since(lastLog) >= logInterval {
+				log.Printf("[sync] waiting for peers before mining (our height=%d)", ours)
+				lastLog = time.Now()
+			}
+		case uint64(best) <= ours:
+			log.Printf("[sync] initial sync complete: height=%d peers=%d", ours, peers)
+			return nil
+		default:
+			if time.Since(lastLog) >= logInterval {
+				log.Printf("[sync] catching up: our=%d best-peer=%d peers=%d", ours, best, peers)
+				lastLog = time.Now()
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-s.quit:
+			return fmt.Errorf("peer server stopped")
+		case <-time.After(pollInterval):
+		}
+	}
 }
 
 // GetPeers returns a snapshot of currently connected peer addresses.
@@ -713,10 +788,75 @@ func (s *PeerServer) removePeer(addr string) {
 // ConnectSeeds starts a reconnect loop for each seed address. Each loop
 // dials on startup and, whenever the connection to that seed is absent,
 // retries at an increasing backoff. Runs for the lifetime of the server.
+//
+// Deduplicates the input so the same seed doesn't get two reconnect
+// goroutines (otherwise every connection attempt opens two sockets to the
+// same host). Self-dial attempts are filtered inside ConnectPeer via
+// isSelfAddr, so a node whose public IP happens to be in the default seed
+// list won't keep bouncing a loopback connection off its own P2P listener.
 func (s *PeerServer) ConnectSeeds(seeds []string) {
+	seen := make(map[string]struct{}, len(seeds))
 	for _, seed := range seeds {
+		seed = strings.TrimSpace(seed)
+		if seed == "" {
+			continue
+		}
+		if _, dup := seen[seed]; dup {
+			continue
+		}
+		seen[seed] = struct{}{}
+		if s.isSelfAddr(seed) {
+			log.Printf("[p2p] skipping self-seed %s", seed)
+			continue
+		}
 		go s.seedReconnectLoop(seed)
 	}
+}
+
+// isSelfAddr reports whether addr resolves to one of this node's local
+// interface addresses AND matches our own P2P listen port. Used to prevent
+// a seed list that contains our own public IP (e.g. on the seed node itself)
+// from triggering an outbound dial to ourselves — which wastes CPU on the
+// BIP-324 handshake and inflates the getpeerinfo response with phantom
+// entries.
+func (s *PeerServer) isSelfAddr(addr string) bool {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if s.listen == nil {
+		return false
+	}
+	_, localPort, err := net.SplitHostPort(s.listen.Addr().String())
+	if err != nil {
+		return false
+	}
+	if port != localPort {
+		return false
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return false
+	}
+	local, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() {
+			return true
+		}
+		for _, la := range local {
+			ipnet, ok := la.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			if ipnet.IP.Equal(ip) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // seedReconnectLoop dials addr and keeps it connected. If the peer disconnects,

@@ -92,11 +92,20 @@ var MainNetParams = ChainParams{
 	Bech32HRP:        "mlrt",
 	GenesisBits:      0x1d00ffff,                          // difficulty-1 at launch; LWMA adapts from here
 	PowLimitBits:     0x1e0ffff0,                          // easiest permitted target (LWMA clamp)
-	MaxBlockWeight:   4_000_000,                           // 4 MWU — matches Bitcoin mainnet
-	GenesisTimestamp: 1_776_618_000, // 2026-04-19 17:00:00 UTC — mainnet re-bootstrap w/ genesis payout
+	// Bootstrap-phase escape valve: a CPU-scale GPU session pushed LWMA to
+	// ~diff 2e10, stranding the chain when the GPU went off. Until sustained
+	// multi-miner hashrate arrives, any block >240s after parent is allowed
+	// to use PowLimitBits. Flip back to false once the network is live.
+	AllowMinDifficultyBlocks: true,
+	MaxBlockWeight:           4_000_000, // 4 MWU — matches Bitcoin mainnet
+	GenesisTimestamp:         1_776_732_000, // 2026-04-21 00:00:00 UTC — mainnet 0.2.0 re-bootstrap; old chaindata invalid
 	Checkpoints:      map[uint64][32]byte{},
-	// SeedPeers will be populated once public bootstrap nodes are deployed.
-	SeedPeers: []string{},
+	// Default bootstrap peer. Fresh installs dial this first so they discover
+	// the network and sync the canonical chain before their local miner can
+	// build an orphan fork from genesis.
+	SeedPeers: []string{
+		"104.192.5.197:9333",
+	},
 }
 
 // TestNetParams are the chain parameters for the Malairt test network.

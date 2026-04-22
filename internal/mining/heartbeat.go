@@ -12,16 +12,16 @@ import (
 )
 
 // HeartbeatSender posts the miner's status (address, worker id, current
-// hashrate) to the explorer every Interval. The explorer uses the presence
-// of recent heartbeats to show a rig as "Active" on the miner dashboard —
-// the lagging "block mined in last N minutes" signal was too noisy on small
-// networks.
+// hashrate, sync progress) to the explorer every Interval. The explorer
+// surfaces this on the miner dashboard so the operator can watch their rig
+// catch up to the network before mining starts, then flip to hashrate mode
+// once the miner is actively producing blocks.
 //
 // Auth model: the sender includes the miner's compressed secp256k1 pubkey
 // (derived from the --miner-key on the node side). The server verifies
 // hash160(pubkey) matches the claimed address before recording. No separate
 // API token is required — possession of the pubkey that hashes to the
-// address is sufficient, and spoofing only affects the cosmetic Active dot.
+// address is sufficient, and spoofing only affects the cosmetic display.
 //
 // If URL, Address, or PubKey is empty the sender is disabled and Start is a
 // no-op so main.go can unconditionally construct one.
@@ -36,6 +36,17 @@ type HeartbeatSender struct {
 	// rateFn returns the current hashes-per-second; allows plugging in any
 	// source (CPU miner, mock in tests) without coupling to *CpuMiner.
 	rateFn func() int64
+	// statusFn returns the current lifecycle status of the node:
+	// "syncing" while WaitForInitialSync is still blocking, "mining" once
+	// the CpuMiner is actually running. Optional; nil reports "mining" for
+	// backward-compatible single-phase senders used in tests.
+	statusFn func() string
+	// heightFn returns the local chain tip height. Optional.
+	heightFn func() uint64
+	// bestPeerHeightFn returns the highest startheight observed across
+	// connected peers — used by the explorer to render a sync progress
+	// bar. Returning 0 means "unknown" and the UI should omit the bar.
+	bestPeerHeightFn func() int32
 
 	client   *http.Client
 	cancelFn context.CancelFunc
@@ -44,7 +55,8 @@ type HeartbeatSender struct {
 
 // NewHeartbeatSender builds a sender that reads the current hashrate from
 // rateFn on every tick. Pass a nil rateFn to report 0 (useful for a
-// bare-node heartbeat).
+// bare-node heartbeat). Use WithChainStatus to attach lifecycle/height
+// probes after construction.
 func NewHeartbeatSender(url, pubKeyHex, address, workerID string, rateFn func() int64) *HeartbeatSender {
 	if rateFn == nil {
 		rateFn = func() int64 { return 0 }
@@ -58,6 +70,27 @@ func NewHeartbeatSender(url, pubKeyHex, address, workerID string, rateFn func() 
 		Timeout:  10 * time.Second,
 		rateFn:   rateFn,
 		client:   &http.Client{Timeout: 10 * time.Second},
+	}
+}
+
+// WithChainStatus attaches live-state probes so the explorer can render a
+// sync-progress badge before the miner starts and a hashrate badge once it
+// does. All three callbacks are optional: nil means "don't report that
+// field". statusFn should return "syncing" during WaitForInitialSync and
+// "mining" afterwards.
+func (h *HeartbeatSender) WithChainStatus(statusFn func() string, heightFn func() uint64, bestPeerHeightFn func() int32) *HeartbeatSender {
+	h.statusFn = statusFn
+	h.heightFn = heightFn
+	h.bestPeerHeightFn = bestPeerHeightFn
+	return h
+}
+
+// SetInterval overrides the default 60s ping cadence. Intended for the
+// sync-wait phase where a tighter cadence (e.g. 10s) makes the progress
+// bar feel responsive.
+func (h *HeartbeatSender) SetInterval(d time.Duration) {
+	if d > 0 {
+		h.Interval = d
 	}
 }
 
@@ -117,6 +150,19 @@ func (h *HeartbeatSender) send(ctx context.Context) {
 		"pubkey":    h.PubKey,
 		"worker_id": h.WorkerID,
 		"hashrate":  h.rateFn(),
+	}
+	if h.statusFn != nil {
+		if s := h.statusFn(); s != "" {
+			payload["status"] = s
+		}
+	}
+	if h.heightFn != nil {
+		payload["height"] = h.heightFn()
+	}
+	if h.bestPeerHeightFn != nil {
+		if bp := h.bestPeerHeightFn(); bp > 0 {
+			payload["best_peer_height"] = bp
+		}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

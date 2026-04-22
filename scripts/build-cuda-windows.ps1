@@ -55,9 +55,9 @@ if ($LASTEXITCODE -ne 0) { Fail "nvcc failed" }
 # Create a static lib that CGO can link against.
 & lib /OUT:libmlrtgpu.lib mlrt_gpu.obj 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) {
-    # lib.exe isn't on PATH — try ar from mingw as fallback.
+    # lib.exe isn't on PATH -- try ar from mingw as fallback.
     & ar rcs libmlrtgpu.a mlrt_gpu.obj
-    if ($LASTEXITCODE -ne 0) { Fail "both lib.exe and ar failed — run from Developer Command Prompt or install mingw" }
+    if ($LASTEXITCODE -ne 0) { Fail "both lib.exe and ar failed -- run from Developer Command Prompt or install mingw" }
 }
 Ok "CUDA library built"
 
