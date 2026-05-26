@@ -1,6 +1,12 @@
 # ── Compiled binaries (distributed via GitHub Releases, never in tree) ───────
 # Anchored to repo root with leading '/' so we don't accidentally ignore
 # cmd/malairte-node/ or cmd/malairte-cli/ source packages.
+# ── Secrets (defense-in-depth — these files must not be inside a git tree) ──
+MLRT.txt
+secret.txt
+secrets/
+*.secrets
+
 /malairte-node
 /malairte-node.exe
 /malairte-node-*
