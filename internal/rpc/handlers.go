@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/computervirtualservices/malairte/internal/chain"
@@ -266,6 +267,15 @@ func (s *Server) sendRawTransaction(params []interface{}) (interface{}, *rpcErro
 	}
 
 	if err := s.pool.Add(tx, feeAtoms); err != nil {
+		// Re-announce duplicates: when the tx is already in our mempool,
+		// re-broadcast the inv anyway so a peer that missed our original
+		// announcement (initial connection race, dropped packet, peer
+		// restart) gets another chance to pull it. Without this, cron-
+		// driven sweep retries can't propagate a stranded tx — the first
+		// sendrawtransaction call fires the inv once and never retries.
+		if strings.Contains(err.Error(), "already in mempool") && s.peerSrv != nil {
+			s.peerSrv.BroadcastTx(tx)
+		}
 		return nil, newRPCError(-26, "transaction rejected: "+err.Error())
 	}
 
