@@ -109,8 +109,25 @@ func ValidateBlock(block *primitives.Block, prevHeader *primitives.BlockHeader, 
 			block.Header.MerkleRoot, computedMerkleRoot)
 	}
 
-	// Validate coinbase reward
-	maxReward := CalcBlockSubsidy(block.Header.Height, params)
+	// Validate coinbase reward. The maximum a coinbase may claim is the
+	// block subsidy plus the sum of fees from every non-coinbase tx —
+	// without summing fees first, fee-bearing blocks are wrongly rejected
+	// as over-reward and the miner is forced to produce empty blocks.
+	var totalFees int64
+	for i := 1; i < len(block.Txs); i++ {
+		fee, err := CalcTxFee(block.Txs[i], utxo)
+		if err != nil {
+			return fmt.Errorf("compute fee for tx %d: %w", i, err)
+		}
+		if fee < 0 {
+			return fmt.Errorf("transaction %d has negative fee %d", i, fee)
+		}
+		totalFees += fee
+		if totalFees < 0 {
+			return errors.New("total fees overflow")
+		}
+	}
+	maxReward := CalcBlockSubsidy(block.Header.Height, params) + totalFees
 	coinbaseTx := block.Txs[0]
 	var coinbaseOut int64
 	for _, out := range coinbaseTx.Outputs {
@@ -285,6 +302,26 @@ func ValidateTx(tx *primitives.Transaction, utxo *UTXOSet, height uint64, params
 	}
 
 	return nil
+}
+
+// CalcTxFee returns the miner fee for tx: sum(input values) - sum(output values).
+// Used by ValidateBlock to compute the maximum coinbase reward (subsidy + fees).
+// Errors if any input references a UTXO not present in the confirmed set.
+func CalcTxFee(tx *primitives.Transaction, utxo *UTXOSet) (int64, error) {
+	var totalIn int64
+	for _, in := range tx.Inputs {
+		u, found := utxo.Get(in.PreviousOutput)
+		if !found {
+			return 0, fmt.Errorf("input UTXO not found: %x:%d",
+				in.PreviousOutput.TxID, in.PreviousOutput.Index)
+		}
+		totalIn += u.Value
+	}
+	var totalOut int64
+	for _, out := range tx.Outputs {
+		totalOut += out.Value
+	}
+	return totalIn - totalOut, nil
 }
 
 // hasOutputToScript returns true if any output in outs pays at least minValue
