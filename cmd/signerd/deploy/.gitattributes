@@ -1,0 +1,6 @@
+# These are consumed on Linux hosts — force LF so a Windows checkout/commit
+# can never introduce CRLF (which breaks bash scripts and systemd units).
+deploy.sh       text eol=lf
+signerd.service text eol=lf
+env.example     text eol=lf
+README.md       text eol=lf

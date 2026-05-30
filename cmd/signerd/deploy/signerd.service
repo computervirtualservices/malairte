@@ -1,0 +1,36 @@
+[Unit]
+Description=CoinDock signer/deriver (MLRT derive-only, Phase 1)
+Documentation=https://github.com/computervirtualservices/malairte/tree/main/cmd/signerd
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=signer
+Group=signer
+EnvironmentFile=/etc/signerd/env
+ExecStart=/usr/local/bin/signerd
+Restart=on-failure
+RestartSec=2
+
+# Hardening — a derive-only service needs no privileges, no disk writes, and
+# only outbound/inbound TCP. Lock everything else down.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
