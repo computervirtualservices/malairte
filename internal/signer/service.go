@@ -9,6 +9,7 @@ type Service struct {
 	cfg      *Config
 	mlrtXpub *ExtendedPubKey
 	ethXpub  *ExtendedPubKey // nil unless ETH_ACCOUNT_XPUB is configured
+	btcXpub  *ExtendedPubKey // nil unless BTC_ACCOUNT_XPUB is configured
 }
 
 // New parses the configured account xpub(s) and, for each chain with a
@@ -31,6 +32,14 @@ func New(cfg *Config) (*Service, error) {
 		s.ethXpub = ethXpub
 	}
 
+	if cfg.BTCEnabled() {
+		btcXpub, err := ParseExtendedPubKey(cfg.BTCAccountXpub)
+		if err != nil {
+			return nil, fmt.Errorf("parse BTC_ACCOUNT_XPUB: %w", err)
+		}
+		s.btcXpub = btcXpub
+	}
+
 	if cfg.SelfTestIndex != nil {
 		if err := s.runSelfTest("MLRT", *cfg.SelfTestIndex, cfg.SelfTestAddress); err != nil {
 			return nil, err
@@ -38,6 +47,11 @@ func New(cfg *Config) (*Service, error) {
 	}
 	if cfg.ETHSelfTestIndex != nil {
 		if err := s.runSelfTest("ETH", *cfg.ETHSelfTestIndex, cfg.ETHSelfTestAddr); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.BTCSelfTestIndex != nil {
+		if err := s.runSelfTest("BTC", *cfg.BTCSelfTestIndex, cfg.BTCSelfTestAddr); err != nil {
 			return nil, err
 		}
 	}

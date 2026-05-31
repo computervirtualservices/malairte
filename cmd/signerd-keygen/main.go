@@ -30,7 +30,7 @@ import (
 
 func main() {
 	var (
-		chain       = flag.String("chain", "mlrt", "chain to derive: mlrt or eth")
+		chain       = flag.String("chain", "mlrt", "chain to derive: mlrt, eth, or btc")
 		words       = flag.Int("words", 24, "mnemonic length for a NEW wallet: 12 or 24")
 		importMn    = flag.String("import", "", "re-derive from an existing BIP39 mnemonic instead of generating one")
 		passphrase  = flag.String("passphrase", "", "optional BIP39 passphrase (25th word) — must be remembered exactly")
@@ -43,15 +43,21 @@ func main() {
 	flag.Parse()
 
 	ch := strings.ToLower(*chain)
-	if ch != "mlrt" && ch != "eth" {
-		fmt.Fprintln(os.Stderr, "error: --chain must be mlrt or eth")
+	if ch != "mlrt" && ch != "eth" && ch != "btc" {
+		fmt.Fprintln(os.Stderr, "error: --chain must be mlrt, eth, or btc")
 		os.Exit(1)
 	}
 
 	// Default coin type per chain unless explicitly overridden.
 	ct := *coinType
 	if ct < 0 {
-		ct = map[string]int{"mlrt": 0, "eth": 60}[ch]
+		ct = map[string]int{"mlrt": 0, "eth": 60, "btc": 0}[ch]
+	}
+
+	// BIP purpose: 84 for BTC native SegWit (BIP84), 44 otherwise (BIP44).
+	purpose := uint32(44)
+	if ch == "btc" {
+		purpose = 84
 	}
 
 	mnemonic, generated, err := getMnemonic(*importMn, *words)
@@ -67,7 +73,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	accountKey, err := master.Derive(hdwallet.H(44), hdwallet.H(uint32(ct)), hdwallet.H(uint32(*account)))
+	accountKey, err := master.Derive(hdwallet.H(purpose), hdwallet.H(uint32(ct)), hdwallet.H(uint32(*account)))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: derive account:", err)
 		os.Exit(1)
@@ -83,10 +89,18 @@ func main() {
 	// running signer will. Cross-check via the private chain AND the public xpub
 	// chain (signerd only has the xpub) and abort if they disagree.
 	encode := func(pub []byte) (string, error) {
-		if ch == "eth" {
+		switch ch {
+		case "eth":
 			return signer.ETHAddressFromCompressedPubKey(pub)
+		case "btc":
+			hrp := "bc"
+			if *addrVersion == 111 { // reuse the testnet hint flag
+				hrp = "tb"
+			}
+			return signer.BTCAddressFromCompressedPubKey(pub, hrp)
+		default:
+			return crypto.PubKeyToAddress(pub, byte(*addrVersion))
 		}
-		return crypto.PubKeyToAddress(pub, byte(*addrVersion))
 	}
 
 	privChild, err := accountKey.Derive(uint32(*change), uint32(*selfTestIdx))
@@ -121,7 +135,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	printResult(ch, mnemonic, generated, xpub, ct, *account, *change, *selfTestIdx, addrPub, byte(*addrVersion))
+	printResult(ch, purpose, mnemonic, generated, xpub, ct, *account, *change, *selfTestIdx, addrPub, byte(*addrVersion))
 }
 
 func getMnemonic(importMn string, words int) (mnemonic string, generated bool, err error) {
@@ -143,13 +157,9 @@ func getMnemonic(importMn string, words int) (mnemonic string, generated bool, e
 	return m, true, nil
 }
 
-func printResult(chain, mnemonic string, generated bool, xpub string, coinType int, account, change, idx uint, addr string, version byte) {
+func printResult(chain string, purpose uint32, mnemonic string, generated bool, xpub string, coinType int, account, change, idx uint, addr string, version byte) {
 	bar := strings.Repeat("=", 72)
-	isETH := chain == "eth"
-	prefix := "MLRT"
-	if isETH {
-		prefix = "ETH"
-	}
+	prefix := map[string]string{"mlrt": "MLRT", "eth": "ETH", "btc": "BTC"}[chain]
 
 	fmt.Println(bar)
 	if generated {
@@ -161,28 +171,33 @@ func printResult(chain, mnemonic string, generated bool, xpub string, coinType i
 		fmt.Println()
 		fmt.Println("   ", mnemonic)
 		fmt.Println()
-		fmt.Println("  Derive other chains from THIS SAME mnemonic, e.g.:")
-		fmt.Printf("    signerd-keygen --import \"<the words>\" --chain %s\n", otherChain(chain))
+		fmt.Println("  Derive the OTHER chains from THIS SAME mnemonic, e.g.:")
+		for _, oc := range otherChains(chain) {
+			fmt.Printf("    signerd-keygen --import \"<the words>\" --chain %s\n", oc)
+		}
 	} else {
 		fmt.Println("  RE-DERIVED FROM IMPORTED MNEMONIC (mnemonic not reprinted)")
 	}
 	fmt.Println(bar)
-	if isETH {
-		fmt.Printf("  Chain          : Ethereum (EIP-55 address)\n")
-	} else {
+	switch chain {
+	case "eth":
+		fmt.Println("  Chain          : Ethereum (EIP-55 address)")
+	case "btc":
+		fmt.Println("  Chain          : Bitcoin (native SegWit P2WPKH, bc1…)")
+	default:
 		net := "mainnet"
 		if version != 50 {
 			net = "testnet"
 		}
 		fmt.Printf("  Chain          : MLRT %s (Base58 version %d)\n", net, version)
 	}
-	fmt.Printf("  Account path   : m/44'/%d'/%d'\n", coinType, account)
+	fmt.Printf("  Account path   : m/%d'/%d'/%d'\n", purpose, coinType, account)
 	fmt.Printf("  Deposit path   : <%d>/<user_id> beneath the account xpub\n", change)
 	fmt.Println(bar)
 	fmt.Println("  PUT THIS IN /etc/signerd/env :")
 	fmt.Println()
 	fmt.Printf("  %s_ACCOUNT_XPUB=%s\n", prefix, xpub)
-	if !isETH {
+	if chain == "mlrt" {
 		fmt.Printf("  MLRT_ADDRESS_VERSION=%d\n", version)
 	}
 	fmt.Printf("  %s_SELFTEST_INDEX=%d\n", prefix, idx)
@@ -194,9 +209,12 @@ func printResult(chain, mnemonic string, generated bool, xpub string, coinType i
 	fmt.Println(bar)
 }
 
-func otherChain(c string) string {
-	if c == "eth" {
-		return "mlrt"
+func otherChains(c string) []string {
+	var out []string
+	for _, x := range []string{"mlrt", "eth", "btc"} {
+		if x != c {
+			out = append(out, x)
+		}
 	}
-	return "eth"
+	return out
 }

@@ -42,6 +42,12 @@ type Config struct {
 	ETHChange        uint32
 	ETHSelfTestIndex *uint32
 	ETHSelfTestAddr  string
+
+	BTCAccountXpub   string
+	BTCChange        uint32
+	BTCHRP           string // "bc" mainnet, "tb" testnet
+	BTCSelfTestIndex *uint32
+	BTCSelfTestAddr  string
 }
 
 // LoadConfig reads and validates configuration from the environment.
@@ -54,6 +60,9 @@ func LoadConfig() (*Config, error) {
 		MLRTAddressVersion: 50, // 'M' mainnet
 		ETHAccountXpub:     os.Getenv("ETH_ACCOUNT_XPUB"),
 		ETHChange:          0,
+		BTCAccountXpub:     os.Getenv("BTC_ACCOUNT_XPUB"),
+		BTCChange:          0,
+		BTCHRP:             getenvDefault("BTC_HRP", "bc"),
 	}
 
 	if err := parseUint31Env("MLRT_BIP44_CHANGE", &cfg.MLRTChange); err != nil {
@@ -83,6 +92,16 @@ func LoadConfig() (*Config, error) {
 	}
 	cfg.ETHSelfTestAddr = os.Getenv("ETH_SELFTEST_ADDRESS")
 
+	if err := parseUint31Env("BTC_BIP44_CHANGE", &cfg.BTCChange); err != nil {
+		return nil, err
+	}
+	if idx, err := parseOptIndexEnv("BTC_SELFTEST_INDEX"); err != nil {
+		return nil, err
+	} else {
+		cfg.BTCSelfTestIndex = idx
+	}
+	cfg.BTCSelfTestAddr = os.Getenv("BTC_SELFTEST_ADDRESS")
+
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -92,6 +111,11 @@ func LoadConfig() (*Config, error) {
 // ETHEnabled reports whether ETH derivation is configured.
 func (c *Config) ETHEnabled() bool {
 	return c.ETHAccountXpub != ""
+}
+
+// BTCEnabled reports whether BTC derivation is configured.
+func (c *Config) BTCEnabled() bool {
+	return c.BTCAccountXpub != ""
 }
 
 func (c *Config) validate() error {
@@ -112,6 +136,12 @@ func (c *Config) validate() error {
 	}
 	if c.ETHSelfTestIndex != nil && !c.ETHEnabled() {
 		return errors.New("ETH_SELFTEST_* set but ETH_ACCOUNT_XPUB is empty")
+	}
+	if (c.BTCSelfTestIndex == nil) != (c.BTCSelfTestAddr == "") {
+		return errors.New("BTC_SELFTEST_INDEX and BTC_SELFTEST_ADDRESS must be set together")
+	}
+	if c.BTCSelfTestIndex != nil && !c.BTCEnabled() {
+		return errors.New("BTC_SELFTEST_* set but BTC_ACCOUNT_XPUB is empty")
 	}
 	return nil
 }

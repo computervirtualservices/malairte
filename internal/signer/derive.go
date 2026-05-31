@@ -26,6 +26,8 @@ func (s *Service) DeriveAddress(chain string, index uint32) (string, error) {
 		return s.deriveMLRT(index)
 	case "ETH":
 		return s.deriveETH(index)
+	case "BTC":
+		return s.deriveBTC(index)
 	case "TRON":
 		return "", fmt.Errorf("%w: TRON", ErrUnsupportedChain)
 	default:
@@ -56,6 +58,21 @@ func (s *Service) deriveETH(index uint32) (string, error) {
 	addr, err := ethAddressFromCompressedPubKey(child.PubKey)
 	if err != nil {
 		return "", fmt.Errorf("encode ETH address: %w", err)
+	}
+	return addr, nil
+}
+
+func (s *Service) deriveBTC(index uint32) (string, error) {
+	if s.btcXpub == nil {
+		return "", fmt.Errorf("%w: BTC (BTC_ACCOUNT_XPUB not configured)", ErrUnsupportedChain)
+	}
+	child, err := s.btcXpub.DerivePath(s.cfg.BTCChange, index)
+	if err != nil {
+		return "", fmt.Errorf("derive BTC %d/%d: %w", s.cfg.BTCChange, index, err)
+	}
+	addr, err := btcP2WPKHFromCompressedPubKey(child.PubKey, s.cfg.BTCHRP)
+	if err != nil {
+		return "", fmt.Errorf("encode BTC address: %w", err)
 	}
 	return addr, nil
 }
