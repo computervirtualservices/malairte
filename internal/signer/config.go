@@ -10,7 +10,7 @@ import (
 // Config holds the signer service configuration, sourced entirely from the
 // environment so no secrets live on disk in the repo.
 //
-// Env vars:
+// MLRT env vars:
 //
 //	SIGNER_BIND_ADDR      listen address (default 127.0.0.1:8088 — private only)
 //	SIGNER_TOKEN          bearer token; MUST equal CoinDock's COINDOCK_SIGNER_TOKEN
@@ -20,15 +20,28 @@ import (
 //	MLRT_SELFTEST_INDEX   optional: index whose derived address must equal …
 //	MLRT_SELFTEST_ADDRESS optional: … this known address, or the service refuses
 //	                      to start (guards against a wrong xpub/path).
+//
+// ETH env vars (OPTIONAL — ETH derivation is only enabled when ETH_ACCOUNT_XPUB
+// is set; otherwise /v1/derive for ETH returns unsupported, exactly as before):
+//
+//	ETH_ACCOUNT_XPUB      BIP32 account xpub (PUBLIC) for m/44'/60'/0'
+//	ETH_BIP44_CHANGE      change level derived before the index (default 0)
+//	ETH_SELFTEST_INDEX    optional boot self-test index …
+//	ETH_SELFTEST_ADDRESS  … expected EIP-55 0x address for that index.
 type Config struct {
-	BindAddr           string
-	Token              string
+	BindAddr string
+	Token    string
+
 	MLRTAccountXpub    string
 	MLRTChange         uint32
 	MLRTAddressVersion byte
+	SelfTestIndex      *uint32
+	SelfTestAddress    string
 
-	SelfTestIndex   *uint32
-	SelfTestAddress string
+	ETHAccountXpub   string
+	ETHChange        uint32
+	ETHSelfTestIndex *uint32
+	ETHSelfTestAddr  string
 }
 
 // LoadConfig reads and validates configuration from the environment.
@@ -39,16 +52,13 @@ func LoadConfig() (*Config, error) {
 		MLRTAccountXpub:    os.Getenv("MLRT_ACCOUNT_XPUB"),
 		MLRTChange:         0,
 		MLRTAddressVersion: 50, // 'M' mainnet
+		ETHAccountXpub:     os.Getenv("ETH_ACCOUNT_XPUB"),
+		ETHChange:          0,
 	}
 
-	if v := os.Getenv("MLRT_BIP44_CHANGE"); v != "" {
-		n, err := strconv.ParseUint(v, 10, 31)
-		if err != nil {
-			return nil, fmt.Errorf("MLRT_BIP44_CHANGE: %w", err)
-		}
-		cfg.MLRTChange = uint32(n)
+	if err := parseUint31Env("MLRT_BIP44_CHANGE", &cfg.MLRTChange); err != nil {
+		return nil, err
 	}
-
 	if v := os.Getenv("MLRT_ADDRESS_VERSION"); v != "" {
 		n, err := strconv.ParseUint(v, 10, 8)
 		if err != nil {
@@ -56,21 +66,32 @@ func LoadConfig() (*Config, error) {
 		}
 		cfg.MLRTAddressVersion = byte(n)
 	}
-
-	if v := os.Getenv("MLRT_SELFTEST_INDEX"); v != "" {
-		n, err := strconv.ParseUint(v, 10, 31)
-		if err != nil {
-			return nil, fmt.Errorf("MLRT_SELFTEST_INDEX: %w", err)
-		}
-		idx := uint32(n)
-		cfg.SelfTestIndex = &idx
+	if idx, err := parseOptIndexEnv("MLRT_SELFTEST_INDEX"); err != nil {
+		return nil, err
+	} else {
+		cfg.SelfTestIndex = idx
 	}
 	cfg.SelfTestAddress = os.Getenv("MLRT_SELFTEST_ADDRESS")
+
+	if err := parseUint31Env("ETH_BIP44_CHANGE", &cfg.ETHChange); err != nil {
+		return nil, err
+	}
+	if idx, err := parseOptIndexEnv("ETH_SELFTEST_INDEX"); err != nil {
+		return nil, err
+	} else {
+		cfg.ETHSelfTestIndex = idx
+	}
+	cfg.ETHSelfTestAddr = os.Getenv("ETH_SELFTEST_ADDRESS")
 
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// ETHEnabled reports whether ETH derivation is configured.
+func (c *Config) ETHEnabled() bool {
+	return c.ETHAccountXpub != ""
 }
 
 func (c *Config) validate() error {
@@ -86,6 +107,12 @@ func (c *Config) validate() error {
 	if (c.SelfTestIndex == nil) != (c.SelfTestAddress == "") {
 		return errors.New("MLRT_SELFTEST_INDEX and MLRT_SELFTEST_ADDRESS must be set together")
 	}
+	if (c.ETHSelfTestIndex == nil) != (c.ETHSelfTestAddr == "") {
+		return errors.New("ETH_SELFTEST_INDEX and ETH_SELFTEST_ADDRESS must be set together")
+	}
+	if c.ETHSelfTestIndex != nil && !c.ETHEnabled() {
+		return errors.New("ETH_SELFTEST_* set but ETH_ACCOUNT_XPUB is empty")
+	}
 	return nil
 }
 
@@ -94,4 +121,30 @@ func getenvDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func parseUint31Env(key string, dst *uint32) error {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.ParseUint(v, 10, 31)
+	if err != nil {
+		return fmt.Errorf("%s: %w", key, err)
+	}
+	*dst = uint32(n)
+	return nil
+}
+
+func parseOptIndexEnv(key string) (*uint32, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil, nil
+	}
+	n, err := strconv.ParseUint(v, 10, 31)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", key, err)
+	}
+	idx := uint32(n)
+	return &idx, nil
 }

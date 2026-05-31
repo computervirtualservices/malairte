@@ -1,20 +1,20 @@
 // Command signerd-keygen generates (OFFLINE) the BIP39 mnemonic + BIP44 account
-// xpub that the CoinDock signer needs as MLRT_ACCOUNT_XPUB.
+// xpub that the CoinDock signer needs (MLRT_ACCOUNT_XPUB or ETH_ACCOUNT_XPUB).
 //
-// RUN THIS ON AN OFFLINE MACHINE. It prints a secret recovery mnemonic. Write
-// the mnemonic on paper, store it securely, and never paste it anywhere online.
-// Only the xpub (public) and the self-test values are copied into the signer
-// config; the mnemonic/seed never leave your control.
+// RUN THIS ON AN OFFLINE MACHINE. For a new wallet it prints a secret recovery
+// mnemonic — write it on paper, store it securely, never paste it anywhere
+// online. Only the xpub (public) and the self-test values are copied into the
+// signer config; the mnemonic/seed never leave your control.
 //
-// Usage:
+// IMPORTANT: derive every chain from the SAME mnemonic. Generate MLRT first
+// (default), then re-run with --import "<that mnemonic>" --chain eth to get the
+// ETH account xpub for the same wallet:
 //
-//	signerd-keygen                       # generate a new 24-word wallet
-//	signerd-keygen --words 12            # 12-word instead of 24
-//	signerd-keygen --import "word1 ..."  # re-derive xpub from an existing mnemonic
-//	signerd-keygen --account 0 --coin-type 0 --self-test-index 1
+//	signerd-keygen                                   # new wallet, MLRT xpub
+//	signerd-keygen --import "word1 ... word24" --chain eth   # ETH xpub, same seed
 //
-// The derivation path is m/44'/<coin-type>'/<account>'. Deposit addresses are
-// then <change>/<index> beneath the account xpub, matching signerd's defaults.
+// Paths: MLRT = m/44'/<coin-type>'/<account>' (coin-type 0), ETH = m/44'/60'/0'.
+// Deposit addresses are <change>/<index> beneath the account xpub.
 package main
 
 import (
@@ -30,16 +30,29 @@ import (
 
 func main() {
 	var (
+		chain       = flag.String("chain", "mlrt", "chain to derive: mlrt or eth")
 		words       = flag.Int("words", 24, "mnemonic length for a NEW wallet: 12 or 24")
 		importMn    = flag.String("import", "", "re-derive from an existing BIP39 mnemonic instead of generating one")
 		passphrase  = flag.String("passphrase", "", "optional BIP39 passphrase (25th word) — must be remembered exactly")
-		coinType    = flag.Uint("coin-type", 0, "BIP44 coin type (MLRT wallet uses 0)")
+		coinType    = flag.Int("coin-type", -1, "BIP44 coin type (default: 0 for mlrt, 60 for eth)")
 		account     = flag.Uint("account", 0, "BIP44 account index")
 		change      = flag.Uint("change", 0, "change level used for deposit addresses (signerd default 0)")
 		selfTestIdx = flag.Uint("self-test-index", 1, "address index to print for the signer boot self-test")
-		addrVersion = flag.Uint("address-version", 50, "Base58 version byte: 50 mainnet 'M', 111 testnet 'm'")
+		addrVersion = flag.Uint("address-version", 50, "MLRT Base58 version byte: 50 mainnet 'M', 111 testnet 'm' (ignored for eth)")
 	)
 	flag.Parse()
+
+	ch := strings.ToLower(*chain)
+	if ch != "mlrt" && ch != "eth" {
+		fmt.Fprintln(os.Stderr, "error: --chain must be mlrt or eth")
+		os.Exit(1)
+	}
+
+	// Default coin type per chain unless explicitly overridden.
+	ct := *coinType
+	if ct < 0 {
+		ct = map[string]int{"mlrt": 0, "eth": 60}[ch]
+	}
 
 	mnemonic, generated, err := getMnemonic(*importMn, *words)
 	if err != nil {
@@ -54,8 +67,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Account path m/44'/<coin-type>'/<account>'.
-	accountKey, err := master.Derive(hdwallet.H(44), hdwallet.H(uint32(*coinType)), hdwallet.H(uint32(*account)))
+	accountKey, err := master.Derive(hdwallet.H(44), hdwallet.H(uint32(ct)), hdwallet.H(uint32(*account)))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: derive account:", err)
 		os.Exit(1)
@@ -67,17 +79,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Cross-check: derive the self-test address two independent ways and require
-	// they agree. (1) private chain: account/change/index → pubkey → address.
-	// (2) public chain: parse the xpub and CKDpub the same path — the exact code
-	// path signerd uses. This proves the xpub is correct AND that signerd (which
-	// only has the xpub) derives the identical address.
+	// Encode the self-test address with the chain's encoder, the same way the
+	// running signer will. Cross-check via the private chain AND the public xpub
+	// chain (signerd only has the xpub) and abort if they disagree.
+	encode := func(pub []byte) (string, error) {
+		if ch == "eth" {
+			return signer.ETHAddressFromCompressedPubKey(pub)
+		}
+		return crypto.PubKeyToAddress(pub, byte(*addrVersion))
+	}
+
 	privChild, err := accountKey.Derive(uint32(*change), uint32(*selfTestIdx))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: private derive self-test:", err)
 		os.Exit(1)
 	}
-	addrPriv, err := crypto.PubKeyToAddress(privChild.Neuter().Key, byte(*addrVersion))
+	addrPriv, err := encode(privChild.Neuter().Key)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: encode address:", err)
 		os.Exit(1)
@@ -93,7 +110,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error: public derive self-test:", err)
 		os.Exit(1)
 	}
-	addrPub, err := crypto.PubKeyToAddress(pubChild.PubKey, byte(*addrVersion))
+	addrPub, err := encode(pubChild.PubKey)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: encode address (pub):", err)
 		os.Exit(1)
@@ -104,7 +121,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	printResult(mnemonic, generated, xpub, *coinType, *account, *change, *selfTestIdx, addrPub, byte(*addrVersion))
+	printResult(ch, mnemonic, generated, xpub, ct, *account, *change, *selfTestIdx, addrPub, byte(*addrVersion))
 }
 
 func getMnemonic(importMn string, words int) (mnemonic string, generated bool, err error) {
@@ -126,11 +143,12 @@ func getMnemonic(importMn string, words int) (mnemonic string, generated bool, e
 	return m, true, nil
 }
 
-func printResult(mnemonic string, generated bool, xpub string, coinType, account, change, idx uint, addr string, version byte) {
+func printResult(chain, mnemonic string, generated bool, xpub string, coinType int, account, change, idx uint, addr string, version byte) {
 	bar := strings.Repeat("=", 72)
-	net := "mainnet"
-	if version != 50 {
-		net = "testnet"
+	isETH := chain == "eth"
+	prefix := "MLRT"
+	if isETH {
+		prefix = "ETH"
 	}
 
 	fmt.Println(bar)
@@ -143,23 +161,42 @@ func printResult(mnemonic string, generated bool, xpub string, coinType, account
 		fmt.Println()
 		fmt.Println("   ", mnemonic)
 		fmt.Println()
+		fmt.Println("  Derive other chains from THIS SAME mnemonic, e.g.:")
+		fmt.Printf("    signerd-keygen --import \"<the words>\" --chain %s\n", otherChain(chain))
 	} else {
 		fmt.Println("  RE-DERIVED FROM IMPORTED MNEMONIC (mnemonic not reprinted)")
 	}
 	fmt.Println(bar)
-	fmt.Printf("  Network        : %s (address version %d)\n", net, version)
+	if isETH {
+		fmt.Printf("  Chain          : Ethereum (EIP-55 address)\n")
+	} else {
+		net := "mainnet"
+		if version != 50 {
+			net = "testnet"
+		}
+		fmt.Printf("  Chain          : MLRT %s (Base58 version %d)\n", net, version)
+	}
 	fmt.Printf("  Account path   : m/44'/%d'/%d'\n", coinType, account)
 	fmt.Printf("  Deposit path   : <%d>/<user_id> beneath the account xpub\n", change)
 	fmt.Println(bar)
 	fmt.Println("  PUT THIS IN /etc/signerd/env :")
 	fmt.Println()
-	fmt.Printf("  MLRT_ACCOUNT_XPUB=%s\n", xpub)
-	fmt.Printf("  MLRT_ADDRESS_VERSION=%d\n", version)
-	fmt.Printf("  MLRT_SELFTEST_INDEX=%d\n", idx)
-	fmt.Printf("  MLRT_SELFTEST_ADDRESS=%s\n", addr)
+	fmt.Printf("  %s_ACCOUNT_XPUB=%s\n", prefix, xpub)
+	if !isETH {
+		fmt.Printf("  MLRT_ADDRESS_VERSION=%d\n", version)
+	}
+	fmt.Printf("  %s_SELFTEST_INDEX=%d\n", prefix, idx)
+	fmt.Printf("  %s_SELFTEST_ADDRESS=%s\n", prefix, addr)
 	fmt.Println()
 	fmt.Println(bar)
 	fmt.Printf("  Self-test check: index %d derives %s\n", idx, addr)
 	fmt.Println("  signerd verifies this at boot and refuses to start on mismatch.")
 	fmt.Println(bar)
+}
+
+func otherChain(c string) string {
+	if c == "eth" {
+		return "mlrt"
+	}
+	return "eth"
 }
