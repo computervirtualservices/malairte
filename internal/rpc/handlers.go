@@ -13,6 +13,7 @@ import (
 	"github.com/computervirtualservices/malairte/internal/crypto"
 	"github.com/computervirtualservices/malairte/internal/mempool"
 	"github.com/computervirtualservices/malairte/internal/primitives"
+	"github.com/computervirtualservices/malairte/internal/version"
 )
 
 // getBlockchainInfo returns summary information about the chain state.
@@ -801,7 +802,7 @@ func (s *Server) getNetworkInfo(_ []interface{}) (interface{}, *rpcError) {
 
 	return map[string]interface{}{
 		"version":          70001,
-		"subversion":       "/Malairted:0.1.0/",
+		"subversion":       version.UserAgent,
 		"protocolversion":  70001,
 		"connections":      connections,
 		"networks":         []interface{}{},
@@ -996,21 +997,41 @@ func (s *Server) getAddressTransactions(params []interface{}) (interface{}, *rpc
 	for _, rec := range records {
 		txid := rec.Tx.TxID()
 
-		// Sum P2PKH outputs that pay to the queried address.
+		// Sum outputs that pay to the queried address (funds received).
 		var received int64
 		for _, out := range rec.Tx.Outputs {
-			h, ok := primitives.ExtractP2PKHHash(out.ScriptPubKey)
-			if !ok {
-				continue
-			}
-			if h == pubKeyHash {
+			if h, ok := addressScriptHash(out.ScriptPubKey); ok && h == pubKeyHash {
 				received += out.Value
 			}
 		}
 
+		// Sum inputs that spend outputs owned by the queried address (funds
+		// sent). The spent value lives in the referenced previous output, so
+		// resolve each prevout from the tx index.
+		var sent int64
+		if !rec.Tx.IsCoinbase() {
+			for _, in := range rec.Tx.Inputs {
+				prevTx, err := s.bc.GetTransaction(in.PreviousOutput.TxID)
+				if err != nil {
+					continue
+				}
+				idx := int(in.PreviousOutput.Index)
+				if idx < 0 || idx >= len(prevTx.Outputs) {
+					continue
+				}
+				prevOut := prevTx.Outputs[idx]
+				if h, ok := addressScriptHash(prevOut.ScriptPubKey); ok && h == pubKeyHash {
+					sent += prevOut.Value
+				}
+			}
+		}
+
 		txType := "received"
-		if rec.Tx.IsCoinbase() {
+		switch {
+		case rec.Tx.IsCoinbase():
 			txType = "coinbase"
+		case sent > received:
+			txType = "sent"
 		}
 
 		confirmations := int64(0)
@@ -1021,7 +1042,9 @@ func (s *Server) getAddressTransactions(params []interface{}) (interface{}, *rpc
 		result = append(result, map[string]interface{}{
 			"txid":          hex.EncodeToString(txid[:]),
 			"type":          txType,
-			"amount":        float64(received) / 1e8,
+			"amount":        float64(received-sent) / 1e8,
+			"received":      float64(received) / 1e8,
+			"sent":          float64(sent) / 1e8,
 			"fee":           0.0,
 			"address":       addrStr,
 			"blockhash":     hex.EncodeToString(rec.BlockHash[:]),
@@ -1033,6 +1056,23 @@ func (s *Server) getAddressTransactions(params []interface{}) (interface{}, *rpc
 	}
 
 	return result, nil
+}
+
+// addressScriptHash maps a standard output script to the same 20-byte
+// identifier the chain's address index uses (P2PKH/P2WPKH share the pkh; P2TR
+// folds the x-only key through Hash160), so handler-side classification matches
+// what GetTransactionsByAddress indexed.
+func addressScriptHash(script []byte) ([20]byte, bool) {
+	if h, ok := primitives.ExtractP2PKHHash(script); ok {
+		return h, true
+	}
+	if h, ok := primitives.ExtractP2WPKHHash(script); ok {
+		return h, true
+	}
+	if xonly, ok := primitives.ExtractP2TRKey(script); ok {
+		return crypto.Hash160(xonly[:]), true
+	}
+	return [20]byte{}, false
 }
 
 // getAddressUTXOs returns the individual unspent outputs for a P2PKH address.

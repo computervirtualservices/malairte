@@ -270,6 +270,86 @@ func TestAddressIndex_IndexesAllThreeScriptTypes(t *testing.T) {
 	}
 }
 
+// TestAddressIndex_IndexesSpends verifies the address indexer records the
+// SENDER side of a transaction — the address whose UTXO is being consumed —
+// not just the recipient outputs. This is the fix for "sent" transactions
+// vanishing from a wallet's history: getaddresstransactions previously only
+// indexed outputs, so a spend from address A showed up under recipient B but
+// never under sender A.
+//
+// The spend script is resolved from the UTXO set, so indexBlockAddresses must
+// run before utxoSet.Apply consumes the input. This test seeds the funding
+// UTXO via Apply, then indexes a spend block while the UTXO is still live, and
+// asserts both the sender and recipient index keys are written.
+func TestAddressIndex_IndexesSpends(t *testing.T) {
+	params := new(ChainParams)
+	*params = TestNetParams
+
+	bc, err := NewBlockchain(params, newMemDB())
+	if err != nil {
+		t.Fatalf("NewBlockchain: %v", err)
+	}
+
+	// Sender A and recipient B, distinct pubkey hashes.
+	var pkhA, pkhB [20]byte
+	for i := range pkhA {
+		pkhA[i] = byte(0xA0 | (i % 16))
+		pkhB[i] = byte(0xB0 | (i % 16))
+	}
+	scriptA := primitives.P2PKHScript(pkhA)
+	scriptB := primitives.P2PKHScript(pkhB)
+
+	// Fund A: a block whose coinbase pays a spendable output to A.
+	dummyScript := []byte{0x76, 0xa9, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x88, 0xac}
+	funding := primitives.NewCoinbaseTx(1, CalcBlockSubsidy(1, params), dummyScript, 0)
+	funding.Outputs = append(funding.Outputs, primitives.TxOutput{Value: 1000, ScriptPubKey: scriptA})
+	fundingBlock := &primitives.Block{
+		Header: primitives.BlockHeader{Height: 1},
+		Txs:    []*primitives.Transaction{funding},
+	}
+	if err := bc.utxoSet.Apply(fundingBlock); err != nil {
+		t.Fatalf("seed funding UTXO: %v", err)
+	}
+	fundingTxid := funding.TxID()
+	fundedOutPoint := primitives.OutPoint{TxID: fundingTxid, Index: 1}
+	if _, ok := bc.utxoSet.Get(fundedOutPoint); !ok {
+		t.Fatalf("funding UTXO not seeded at index 1")
+	}
+
+	// Spend A's output to B. Real prevout makes this a non-coinbase tx.
+	spend := &primitives.Transaction{
+		Version: 1,
+		Inputs:  []primitives.TxInput{{PreviousOutput: fundedOutPoint}},
+		Outputs: []primitives.TxOutput{{Value: 900, ScriptPubKey: scriptB}},
+	}
+	if spend.IsCoinbase() {
+		t.Fatalf("spend tx unexpectedly classified as coinbase")
+	}
+	const spendHeight = uint64(2)
+	spendBlock := &primitives.Block{
+		Header: primitives.BlockHeader{Height: spendHeight},
+		Txs:    []*primitives.Transaction{spend},
+	}
+
+	// Index the spend block while the funding UTXO is still live.
+	batch := bc.db.NewBatch()
+	bc.indexBlockAddresses(batch, spendBlock)
+	if err := batch.Write(); err != nil {
+		t.Fatalf("write index batch: %v", err)
+	}
+
+	spendTxid := spend.TxID()
+	senderKey := addrIndexKey(pkhA, spendHeight, spendTxid)
+	recipientKey := addrIndexKey(pkhB, spendHeight, spendTxid)
+
+	if has, err := bc.db.Has(senderKey); err != nil || !has {
+		t.Errorf("sender (A) spend not indexed: has=%v err=%v; the input-indexing fix is not working", has, err)
+	}
+	if has, err := bc.db.Has(recipientKey); err != nil || !has {
+		t.Errorf("recipient (B) output not indexed: has=%v err=%v", has, err)
+	}
+}
+
 // TestProcessBlock_SiblingFork_RejectedWhenEqualWork covers the first-seen
 // tiebreaker: a competing block at the same height and same bits as the
 // current tip has equal PoW; we keep the block we saw first.

@@ -115,7 +115,7 @@ func (bc *Blockchain) writeGenesis(genesis *primitives.Block) error {
 	}
 
 	// Index P2PKH output addresses: pubKeyHash → txid
-	indexBlockAddresses(batch, genesis)
+	bc.indexBlockAddresses(batch, genesis)
 
 	if err := batch.Write(); err != nil {
 		return err
@@ -322,7 +322,7 @@ func (bc *Blockchain) ProcessBlock(block *primitives.Block) error {
 	}
 
 	// Index P2PKH output addresses: pubKeyHash → txid
-	indexBlockAddresses(batch, block)
+	bc.indexBlockAddresses(batch, block)
 
 	if err := batch.Write(); err != nil {
 		return fmt.Errorf("write block to storage: %w", err)
@@ -606,7 +606,7 @@ func (bc *Blockchain) applyLocked(block *primitives.Block) error {
 		txid := tx.TxID()
 		batch.Put(txIndexKey(txid), hash[:])
 	}
-	indexBlockAddresses(batch, block)
+	bc.indexBlockAddresses(batch, block)
 	if err := batch.Write(); err != nil {
 		return fmt.Errorf("write block: %w", err)
 	}
@@ -1019,35 +1019,64 @@ func addrIndexKey(pubKeyHash [20]byte, height uint64, txid [32]byte) []byte {
 	return key
 }
 
-// indexBlockAddresses writes address-index entries for every standard output
-// template in the block. Every output maps to a 20-byte identifier that's
-// stable across address formats for the same recipient:
+// scriptIndexHash maps a standard output script to the 20-byte identifier used
+// by the address index. It is stable across address formats for the same
+// recipient:
 //
-//   P2PKH   (25 bytes, "M…" base58):  index by scriptPubKey's 20-byte pkh
-//   P2WPKH  (22 bytes, "mlrt1q…"):    index by scriptPubKey's 20-byte pkh
-//   P2TR    (34 bytes, "mlrt1p…"):    index by Hash160 of the 32-byte xonly
+//   P2PKH   (25 bytes, "M…" base58):  scriptPubKey's 20-byte pkh
+//   P2WPKH  (22 bytes, "mlrt1q…"):    scriptPubKey's 20-byte pkh
+//   P2TR    (34 bytes, "mlrt1p…"):    Hash160 of the 32-byte xonly key
 //
 // P2PKH and P2WPKH derived from the same key produce the same pkh, so they
 // share index entries. P2TR uses a different key (the tweaked output key),
 // which we fold into the same 20-byte namespace via Hash160 — callers query
 // by computing the same 20-byte derivation on the client side.
-func indexBlockAddresses(batch storage.Batch, block *primitives.Block) {
+func scriptIndexHash(script []byte) ([20]byte, bool) {
+	if hash, ok := primitives.ExtractP2PKHHash(script); ok {
+		return hash, true
+	}
+	if hash, ok := primitives.ExtractP2WPKHHash(script); ok {
+		return hash, true
+	}
+	if xonly, ok := primitives.ExtractP2TRKey(script); ok {
+		return crypto.Hash160(xonly[:]), true
+	}
+	return [20]byte{}, false
+}
+
+// indexBlockAddresses writes address-index entries for every standard script in
+// the block — on both sides of each transaction:
+//
+//   outputs: the recipient address (funds received)
+//   inputs:  the address of the output being spent (funds sent)
+//
+// Indexing the spend side is what lets getaddresstransactions return a
+// complete history; without it, only "received" transactions are recorded and
+// a wallet that sends funds sees those sends vanish from its history.
+//
+// Spent-input scripts are resolved from the UTXO set, so this MUST run before
+// utxoSet.Apply consumes them (matching the spent-script resolution done for
+// the compact block filter). Coinbase inputs reference no real output and are
+// skipped. A transaction that both spends from and pays to the same address
+// writes the same (hash,height,txid) key twice, which is idempotent.
+func (bc *Blockchain) indexBlockAddresses(batch storage.Batch, block *primitives.Block) {
 	height := block.Header.Height
 	for _, tx := range block.Txs {
 		txid := tx.TxID()
 		for _, out := range tx.Outputs {
-			if hash, ok := primitives.ExtractP2PKHHash(out.ScriptPubKey); ok {
+			if hash, ok := scriptIndexHash(out.ScriptPubKey); ok {
 				batch.Put(addrIndexKey(hash, height, txid), []byte{})
+			}
+		}
+		if tx.IsCoinbase() {
+			continue
+		}
+		for _, in := range tx.Inputs {
+			spent, ok := bc.utxoSet.Get(in.PreviousOutput)
+			if !ok {
 				continue
 			}
-			if hash, ok := primitives.ExtractP2WPKHHash(out.ScriptPubKey); ok {
-				batch.Put(addrIndexKey(hash, height, txid), []byte{})
-				continue
-			}
-			if xonly, ok := primitives.ExtractP2TRKey(out.ScriptPubKey); ok {
-				// Fold 32-byte taproot key into the 20-byte namespace via
-				// Hash160 so all address types share a single index.
-				hash := crypto.Hash160(xonly[:])
+			if hash, ok := scriptIndexHash(spent.Script); ok {
 				batch.Put(addrIndexKey(hash, height, txid), []byte{})
 			}
 		}
